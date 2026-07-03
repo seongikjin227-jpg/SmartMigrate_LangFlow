@@ -156,6 +156,11 @@ def build_poll_jobs_tool(
             if logger:
                 logger.info(f"[poll_jobs] 챗봇 재실행 요청 → type={t}, target={target}")
 
+        raw_mig_total = len(mig_jobs)
+        raw_sql_total = len(sql_jobs)
+        raw_tuning_total = len(tuning_jobs)
+        raw_formatting_total = len(formatting_jobs)
+
         if not target:
             mig_jobs, sql_jobs, tuning_jobs, formatting_jobs = priority_gate_jobs(
                 mig_jobs, sql_jobs, tuning_jobs, formatting_jobs
@@ -216,13 +221,13 @@ def build_poll_jobs_tool(
                 for job in formatting_registry.values()
             ],
             "summary": {
-                "migration_total": len(mig_jobs),
+                "migration_total": raw_mig_total,
                 "migration_in_batch": len(mig_registry),
-                "sql_total": len(sql_jobs),
+                "sql_total": raw_sql_total,
                 "sql_in_batch": len(sql_registry),
-                "tuning_total": len(tuning_jobs),
+                "tuning_total": raw_tuning_total,
                 "tuning_in_batch": len(tuning_registry),
-                "formatting_total": len(formatting_jobs),
+                "formatting_total": raw_formatting_total,
                 "formatting_in_batch": len(formatting_registry),
                 "sql_by_status": _count_by_status(
                     [j.status for j in sql_registry.values()]

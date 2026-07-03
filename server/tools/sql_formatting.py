@@ -10,6 +10,7 @@ from server.tools.context import (
     record_agent_run,
     refresh_jobs_after_tool,
     set_active_job,
+    sql_job_display_id,
 )
 
 
@@ -25,21 +26,22 @@ def run_sql_formatting(row_ids: list) -> str:
             results.append(f"row_id={row_id} not found")
             continue
 
+        job_label = sql_job_display_id(job, row_id)
         started = time.perf_counter()
         try:
             if not claim_job_execution():
                 return "SKIP: another job already ran in this supervisor cycle."
             row_key = str(row_id)
-            set_active_job("SQL Formatting", row_key, "FORMATTING")
+            set_active_job("SQL Formatting", job_label, "FORMATTING")
             callbacks["sql_inc"](row_key)
             final_status = callbacks["format_proc"](job)
             record_agent_run("SQL_FORMATTING", time.perf_counter() - started, final_status)
-            results.append(f"row_id={row_id} completed")
+            results.append(f"{job_label} completed")
         except Exception as exc:
             record_agent_run("SQL_FORMATTING", time.perf_counter() - started, "FAIL")
             if logger:
-                logger.error(f"[SqlFormattingTool] row_id={row_id} error: {exc}")
-            results.append(f"row_id={row_id} failed: {exc}")
+                logger.error(f"[SqlFormattingTool] {job_label} error: {exc}")
+            results.append(f"{job_label} failed: {exc}")
         finally:
             clear_active_job()
             refresh_jobs_after_tool()

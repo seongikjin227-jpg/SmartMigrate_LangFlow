@@ -2,7 +2,7 @@ import time
 
 from server.repositories.sql.result_repository import get_sql_job_by_row_id
 from server.services.sql.statuses import is_tuning_pass
-from server.tools.context import callbacks, record_agent_run, set_active_job
+from server.tools.context import callbacks, record_agent_run, set_active_job, sql_job_display_id
 from server.tools.poll import _agent_flags
 
 
@@ -22,18 +22,19 @@ def run_tuning_continuation(row_id: str, logger=None) -> list[str]:
     if job is None:
         return [f"tuning skipped: row_id={row_key} not found"]
 
+    job_label = sql_job_display_id(job, row_key)
     started = time.perf_counter()
     try:
-        set_active_job("SQL Tuning", row_key, "TUNING")
+        set_active_job("SQL Tuning", job_label, "TUNING")
         sql_inc(row_key)
         final_status = tune_proc(job)
         record_agent_run("SQL_TUNING", time.perf_counter() - started, final_status)
         if logger:
-            logger.info(f"[SqlChain] row_id={row_key} tuning completed (status={final_status})")
+            logger.info(f"[SqlChain] {job_label} tuning completed (status={final_status})")
     except Exception as exc:
         record_agent_run("SQL_TUNING", time.perf_counter() - started, "FAIL")
         if logger:
-            logger.error(f"[SqlChain] row_id={row_key} tuning error: {exc}")
+            logger.error(f"[SqlChain] {job_label} tuning error: {exc}")
         return [f"tuning failed: {exc}"]
 
     results = [f"tuning={final_status}"]
@@ -58,17 +59,18 @@ def run_formatting_continuation(row_id: str, logger=None) -> list[str]:
     if job is None:
         return [f"formatting skipped: row_id={row_key} not found"]
 
+    job_label = sql_job_display_id(job, row_key)
     started = time.perf_counter()
     try:
-        set_active_job("SQL Formatting", row_key, "FORMATTING")
+        set_active_job("SQL Formatting", job_label, "FORMATTING")
         sql_inc(row_key)
         final_status = format_proc(job)
         record_agent_run("SQL_FORMATTING", time.perf_counter() - started, final_status)
         if logger:
-            logger.info(f"[SqlChain] row_id={row_key} formatting completed (status={final_status})")
+            logger.info(f"[SqlChain] {job_label} formatting completed (status={final_status})")
         return [f"formatting={final_status}"]
     except Exception as exc:
         record_agent_run("SQL_FORMATTING", time.perf_counter() - started, "FAIL")
         if logger:
-            logger.error(f"[SqlChain] row_id={row_key} formatting error: {exc}")
+            logger.error(f"[SqlChain] {job_label} formatting error: {exc}")
         return [f"formatting failed: {exc}"]

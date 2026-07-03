@@ -11,6 +11,7 @@ from server.tools.context import (
     record_agent_run,
     refresh_jobs_after_tool,
     set_active_job,
+    sql_job_display_id,
     sql_registry,
 )
 
@@ -25,11 +26,12 @@ def run_sql_conversion(row_id: str) -> str:
     if job is None:
         return f"ERROR: row_id={row_key} was not found in the current registry."
 
+    job_label = sql_job_display_id(job, row_key)
     started = time.perf_counter()
     try:
         if not claim_job_execution():
             return "SKIP: another job already ran in this supervisor cycle."
-        set_active_job("SQL Conversion", row_key, "CONVERSION")
+        set_active_job("SQL Conversion", job_label, "CONVERSION")
         callbacks["sql_inc"](row_key)
         final_status = callbacks["sql_proc"](job)
         record_agent_run("SQL_MIGRATION", time.perf_counter() - started, final_status)
@@ -37,14 +39,14 @@ def run_sql_conversion(row_id: str) -> str:
         if is_conversion_pass(final_status):
             chain_results = run_tuning_continuation(row_key, logger=logger)
         if logger:
-            logger.info(f"[SqlConversionTool] row_id={row_key} completed (status={final_status})")
+            logger.info(f"[SqlConversionTool] {job_label} completed (status={final_status})")
         suffix = f" | {' | '.join(chain_results)}" if chain_results else ""
-        return f"SqlConversion row_id={row_key} completed status={final_status}{suffix}"
+        return f"SqlConversion {job_label} completed status={final_status}{suffix}"
     except Exception as exc:
         record_agent_run("SQL_MIGRATION", time.perf_counter() - started, "FAIL")
         if logger:
-            logger.error(f"[SqlConversionTool] row_id={row_key} error: {exc}")
-        return f"ERROR: row_id={row_key} failed: {exc}"
+            logger.error(f"[SqlConversionTool] {job_label} error: {exc}")
+        return f"ERROR: {job_label} failed: {exc}"
     finally:
         clear_active_job()
         refresh_jobs_after_tool()

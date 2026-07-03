@@ -6,6 +6,7 @@ from server.tools.context import (
     callbacks,
     clear_active_job,
     claim_job_execution,
+    migration_job_display_id,
     mig_registry,
     record_agent_run,
     refresh_jobs_after_tool,
@@ -26,7 +27,7 @@ def run_data_migration(map_id: int) -> str:
     try:
         if not claim_job_execution():
             return "SKIP: another job already ran in this supervisor cycle."
-        set_active_job("DB Migration", map_id, "RUN")
+        set_active_job("DB Migration", migration_job_display_id(job, map_id), "RUN")
         final_status = callbacks["mig_proc"](job)
         record_agent_run("DB_MIGRATION", time.perf_counter() - started, final_status)
         if logger:

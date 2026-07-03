@@ -11,6 +11,7 @@ from server.tools.context import (
     record_agent_run,
     refresh_jobs_after_tool,
     set_active_job,
+    sql_job_display_id,
     tuning_registry,
 )
 
@@ -27,23 +28,24 @@ def run_sql_tuning(row_ids: list) -> str:
             results.append(f"row_id={row_id} not found")
             continue
 
+        job_label = sql_job_display_id(job, row_id)
         started = time.perf_counter()
         try:
             if not claim_job_execution():
                 return "SKIP: another job already ran in this supervisor cycle."
             row_key = str(row_id)
-            set_active_job("SQL Tuning", row_key, "TUNING")
+            set_active_job("SQL Tuning", job_label, "TUNING")
             callbacks["sql_inc"](row_key)
             final_status = callbacks["tune_proc"](job)
             record_agent_run("SQL_TUNING", time.perf_counter() - started, final_status)
-            results.append(f"row_id={row_id} completed status={final_status}")
+            results.append(f"{job_label} completed status={final_status}")
             if is_tuning_pass(final_status):
                 results.extend(run_formatting_continuation(row_key, logger=logger))
         except Exception as exc:
             record_agent_run("SQL_TUNING", time.perf_counter() - started, "FAIL")
             if logger:
-                logger.error(f"[SqlTuningTool] row_id={row_id} error: {exc}")
-            results.append(f"row_id={row_id} failed: {exc}")
+                logger.error(f"[SqlTuningTool] {job_label} error: {exc}")
+            results.append(f"{job_label} failed: {exc}")
         finally:
             clear_active_job()
             refresh_jobs_after_tool()

@@ -106,6 +106,11 @@ def build_supervisor_graph(
         except Exception as exc:
             logger.error(f"[refresh_jobs] SQL/Tuning/Formatting query error: {exc}")
 
+        raw_mig_total = len(mig_jobs)
+        raw_sql_total = len(sql_jobs)
+        raw_tuning_total = len(tuning_jobs)
+        raw_formatting_total = len(formatting_jobs)
+
         mig_jobs, sql_jobs, tuning_jobs, formatting_jobs = priority_gate_jobs(
             mig_jobs, sql_jobs, tuning_jobs, formatting_jobs
         )
@@ -126,10 +131,10 @@ def build_supervisor_graph(
 
         logger.info(
             "[refresh_jobs] refreshed after job "
-            f"(Mig={len(mig_registry)}/{len(mig_jobs)}, "
-            f"Sql={len(sql_registry)}/{len(sql_jobs)}, "
-            f"Tuning={len(tuning_registry)}/{len(tuning_jobs)}, "
-            f"Formatting={len(formatting_registry)}/{len(formatting_jobs)})"
+            f"(Mig={len(mig_registry)}/{raw_mig_total}, "
+            f"Sql={len(sql_registry)}/{raw_sql_total}, "
+            f"Tuning={len(tuning_registry)}/{raw_tuning_total}, "
+            f"Formatting={len(formatting_registry)}/{raw_formatting_total})"
         )
 
     init_callbacks(

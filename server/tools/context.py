@@ -62,6 +62,28 @@ def refresh_jobs_after_tool() -> None:
         refresh_jobs()
 
 
+def _job_value(job, *names: str):
+    for name in names:
+        if isinstance(job, dict) and name in job:
+            return job.get(name)
+        if hasattr(job, name):
+            return getattr(job, name)
+    return None
+
+
+def sql_job_display_id(job, fallback: str | int = "") -> str:
+    sql_id = _job_value(job, "SQL_ID", "sql_id")
+    space_nm = _job_value(job, "SPACE_NM", "space_nm")
+    if sql_id and space_nm:
+        return f"{sql_id} / {space_nm}"
+    return str(sql_id or space_nm or fallback or "")
+
+
+def migration_job_display_id(job, fallback: str | int = "") -> str:
+    map_id = _job_value(job, "MAP_ID", "map_id")
+    return str(map_id or fallback or "")
+
+
 def set_active_job(agent_name: str, job_id: str | int, stage: str | None = None) -> None:
     ACTIVE_JOB_FILE.parent.mkdir(exist_ok=True)
     payload = {
