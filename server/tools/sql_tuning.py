@@ -6,9 +6,11 @@ from server.services.sql.statuses import is_tuning_pass
 from server.tools.sql_chain import run_formatting_continuation
 from server.tools.context import (
     callbacks,
+    clear_active_job,
     claim_job_execution,
     record_agent_run,
     refresh_jobs_after_tool,
+    set_active_job,
     tuning_registry,
 )
 
@@ -30,6 +32,7 @@ def run_sql_tuning(row_ids: list) -> str:
             if not claim_job_execution():
                 return "SKIP: another job already ran in this supervisor cycle."
             row_key = str(row_id)
+            set_active_job("SQL Tuning", row_key, "TUNING")
             callbacks["sql_inc"](row_key)
             final_status = callbacks["tune_proc"](job)
             record_agent_run("SQL_TUNING", time.perf_counter() - started, final_status)
@@ -42,6 +45,7 @@ def run_sql_tuning(row_ids: list) -> str:
                 logger.error(f"[SqlTuningTool] row_id={row_id} error: {exc}")
             results.append(f"row_id={row_id} failed: {exc}")
         finally:
+            clear_active_job()
             refresh_jobs_after_tool()
         break
 

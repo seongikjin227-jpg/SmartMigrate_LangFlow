@@ -2,7 +2,7 @@ import time
 
 from server.repositories.sql.result_repository import get_sql_job_by_row_id
 from server.services.sql.statuses import is_tuning_pass
-from server.tools.context import callbacks, record_agent_run
+from server.tools.context import callbacks, record_agent_run, set_active_job
 from server.tools.poll import _agent_flags
 
 
@@ -24,6 +24,7 @@ def run_tuning_continuation(row_id: str, logger=None) -> list[str]:
 
     started = time.perf_counter()
     try:
+        set_active_job("SQL Tuning", row_key, "TUNING")
         sql_inc(row_key)
         final_status = tune_proc(job)
         record_agent_run("SQL_TUNING", time.perf_counter() - started, final_status)
@@ -59,6 +60,7 @@ def run_formatting_continuation(row_id: str, logger=None) -> list[str]:
 
     started = time.perf_counter()
     try:
+        set_active_job("SQL Formatting", row_key, "FORMATTING")
         sql_inc(row_key)
         final_status = format_proc(job)
         record_agent_run("SQL_FORMATTING", time.perf_counter() - started, final_status)

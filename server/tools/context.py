@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from server.repositories.supervisor.metrics_repository import (
 _stop_event = threading.Event()
 PAUSE_FLAG = Path(__file__).resolve().parent.parent.parent / "runtime" / "agent.pause"
 WAKE_FLAG  = Path(__file__).resolve().parent.parent.parent / "runtime" / "agent.wake"
+ACTIVE_JOB_FILE = Path(__file__).resolve().parent.parent.parent / "runtime" / "active_job.json"
 
 
 def is_stop_requested() -> bool:
@@ -58,6 +60,21 @@ def refresh_jobs_after_tool() -> None:
     refresh_jobs = callbacks.get("refresh_jobs")
     if refresh_jobs:
         refresh_jobs()
+
+
+def set_active_job(agent_name: str, job_id: str | int, stage: str | None = None) -> None:
+    ACTIVE_JOB_FILE.parent.mkdir(exist_ok=True)
+    payload = {
+        "agent": str(agent_name or ""),
+        "id": str(job_id or ""),
+        "stage": str(stage or ""),
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    ACTIVE_JOB_FILE.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def clear_active_job() -> None:
+    ACTIVE_JOB_FILE.unlink(missing_ok=True)
 
 
 def start_batch_metrics(batch_no: int) -> None:

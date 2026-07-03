@@ -3,12 +3,14 @@ import os
 import sys
 import signal
 import subprocess
+import json
 from pathlib import Path
 
 _ROOT       = Path(__file__).resolve().parent.parent.parent
 _RUNTIME    = _ROOT / "runtime"
 _PID_FILE   = _RUNTIME / "agent.pid"
 _PAUSE_FILE = _RUNTIME / "agent.pause"
+_ACTIVE_JOB_FILE = _RUNTIME / "active_job.json"
 _MAIN_PY    = _ROOT / "main.py"
 
 
@@ -29,6 +31,25 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _read_active_job() -> dict | None:
+    try:
+        data = json.loads(_ACTIVE_JOB_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    agent = str(data.get("agent") or "").strip()
+    job_id = str(data.get("id") or "").strip()
+    if not agent and not job_id:
+        return None
+    return {
+        "agent": agent,
+        "id": job_id,
+        "stage": str(data.get("stage") or "").strip(),
+        "started_at": str(data.get("started_at") or "").strip(),
+    }
+
+
 def get_status() -> dict:
     """현재 에이전트 상태를 반환."""
     pid = _read_pid()
@@ -36,11 +57,13 @@ def get_status() -> dict:
     if not running and _PID_FILE.exists():
         _PID_FILE.unlink(missing_ok=True)   # 좀비 PID 파일 정리
     paused  = running and _PAUSE_FILE.exists()
+    active_job = _read_active_job() if running else None
     return {
         "running": running,
         "paused":  paused,
         "pid":     pid if running else None,
         "label":   ("🟡 일시정지 중" if paused else "🟢 실행 중") if running else "🔴 중지됨",
+        "active_job": active_job,
     }
 
 
@@ -52,6 +75,7 @@ def start() -> str:
         return "이미 실행 중입니다."
     _RUNTIME.mkdir(exist_ok=True)
     _PAUSE_FILE.unlink(missing_ok=True)
+    _ACTIVE_JOB_FILE.unlink(missing_ok=True)
     process = subprocess.Popen(
         [sys.executable, str(_MAIN_PY)],
         cwd=str(_ROOT),
@@ -74,6 +98,7 @@ def stop() -> str:
             os.kill(pid, signal.SIGTERM)
         _PID_FILE.unlink(missing_ok=True)
         _PAUSE_FILE.unlink(missing_ok=True)
+        _ACTIVE_JOB_FILE.unlink(missing_ok=True)
         return f"에이전트(PID {pid})를 중지했습니다."
     except Exception as e:
         return f"중지 실패: {e}"

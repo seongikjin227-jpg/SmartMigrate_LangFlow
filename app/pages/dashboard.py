@@ -41,7 +41,7 @@ _FAIL_ANALYSIS_HINTS_FILE = _ROOT / "app" / "config" / "fail_analysis_hints.json
 
 def _is_supervisor_mode() -> bool:
     env = read_env()
-    return env.get("SUPERVISOR_MODE", "false").lower() == "true"
+    return str(env.get("SUPERVISOR_MODE", "Y")).strip().lower() in {"1", "true", "t", "y", "yes", "on"}
 
 
 def _wake_supervisor() -> None:

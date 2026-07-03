@@ -4,10 +4,12 @@ from langchain_core.tools import tool
 
 from server.tools.context import (
     callbacks,
+    clear_active_job,
     claim_job_execution,
     mig_registry,
     record_agent_run,
     refresh_jobs_after_tool,
+    set_active_job,
 )
 
 
@@ -24,6 +26,7 @@ def run_data_migration(map_id: int) -> str:
     try:
         if not claim_job_execution():
             return "SKIP: another job already ran in this supervisor cycle."
+        set_active_job("DB Migration", map_id, "RUN")
         final_status = callbacks["mig_proc"](job)
         record_agent_run("DB_MIGRATION", time.perf_counter() - started, final_status)
         if logger:
@@ -35,4 +38,5 @@ def run_data_migration(map_id: int) -> str:
             logger.error(f"[DataMigrationTool] map_id={map_id} error: {exc}")
         return f"ERROR: map_id={map_id} failed: {exc}"
     finally:
+        clear_active_job()
         refresh_jobs_after_tool()

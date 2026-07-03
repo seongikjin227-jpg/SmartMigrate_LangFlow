@@ -35,6 +35,13 @@ _AGENT_CONTROL_ACTIONS = {
 }
 
 
+def _env_bool(env: dict, key: str, default: bool = False) -> bool:
+    raw_value = env.get(key)
+    if raw_value is None:
+        return default
+    return str(raw_value).strip().lower() in {"1", "true", "t", "y", "yes", "on"}
+
+
 def _queue_agent_control(action: str) -> None:
     st.session_state["agent_control_pending"] = action
     st.rerun()
@@ -46,11 +53,13 @@ def _run_pending_agent_control() -> None:
         return
 
     label, handler = _AGENT_CONTROL_ACTIONS.get(action, ("Agent 제어 중...", None))
-    with st.spinner(label):
+    with st.status(label, expanded=True) as status_box:
         try:
             message = handler() if handler else f"알 수 없는 Agent 제어 요청입니다: {action}"
+            status_box.update(label=message, state="complete", expanded=False)
         except Exception as exc:
             message = f"Agent 제어 실패: {exc}"
+            status_box.update(label=message, state="error", expanded=True)
 
     st.session_state.pop("agent_control_pending", None)
     st.toast(message)
@@ -96,36 +105,55 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("#### 🧭 Agent 선택")
     env = read_env()
-    db_only = env.get("DB_MIGRATION_ONLY", "false").lower() == "true"
-    sql_only = env.get("SQL_CONVERSION_ONLY", "false").lower() == "true"
-    tuning_only = env.get("SQL_TUNING_ONLY", "false").lower() == "true"
-    formatting_only = env.get("SQL_FORMATTING_ONLY", "false").lower() == "true"
-    supervisor_mode = env.get("SUPERVISOR_MODE", "false").lower() == "true"
+    db_only = _env_bool(env, "DB_MIGRATION_ONLY")
+    sql_only = _env_bool(env, "SQL_CONVERSION_ONLY")
+    tuning_only = _env_bool(env, "SQL_TUNING_ONLY")
+    formatting_only = _env_bool(env, "SQL_FORMATTING_ONLY")
+    supervisor_mode = _env_bool(env, "SUPERVISOR_MODE", default=True)
+    only_enabled = any((db_only, sql_only, tuning_only, formatting_only))
 
-    new_supervisor_mode = st.toggle("Supervisor", value=supervisor_mode, help="Supervisor 모드: AI가 실패 원인 분석 및 특정 작업 재실행을 지원합니다.")
-    new_db_only = st.toggle("DB Migration", value=db_only)
-    new_sql_only = st.toggle("SQL Conversion", value=sql_only)
-    new_tuning_only = st.toggle("SQL Tuning", value=tuning_only)
-    new_formatting_only = st.toggle("SQL Formatting", value=formatting_only)
+    new_supervisor_mode = st.toggle(
+        "Supervisor",
+        value=supervisor_mode and not only_enabled,
+        disabled=only_enabled,
+        help="Supervisor 모드: AI가 실패 원인 분석 및 특정 작업 재실행을 지원합니다.",
+    )
+    new_only_enabled = st.toggle(
+        "에이전트 선택 실행 활성화",
+        value=only_enabled,
+        help="특정 Agent만 실행해야 할 때 켭니다. 기본은 Supervisor 전체 실행입니다.",
+    )
+    if new_only_enabled:
+        new_supervisor_mode = False
 
-    if (new_db_only, new_sql_only, new_tuning_only, new_formatting_only, new_supervisor_mode) != (
+    if new_only_enabled:
+        new_db_only = st.toggle("DB Migration", value=db_only)
+        new_sql_only = st.toggle("SQL Conversion", value=sql_only)
+        new_tuning_only = st.toggle("SQL Tuning", value=tuning_only)
+        new_formatting_only = st.toggle("SQL Formatting", value=formatting_only)
+    else:
+        new_db_only = False
+        new_sql_only = False
+        new_tuning_only = False
+        new_formatting_only = False
+
+    if (new_db_only, new_sql_only, new_tuning_only, new_formatting_only, new_supervisor_mode, new_only_enabled) != (
         db_only,
         sql_only,
         tuning_only,
         formatting_only,
         supervisor_mode,
+        only_enabled,
     ):
-        write_env_key("DB_MIGRATION_ONLY", str(new_db_only).lower())
-        write_env_key("SQL_CONVERSION_ONLY", str(new_sql_only).lower())
-        write_env_key("SQL_TUNING_ONLY", str(new_tuning_only).lower())
-        write_env_key("SQL_FORMATTING_ONLY", str(new_formatting_only).lower())
-        write_env_key("SUPERVISOR_MODE", str(new_supervisor_mode).lower())
+        write_env_key("DB_MIGRATION_ONLY", "Y" if new_db_only else "N")
+        write_env_key("SQL_CONVERSION_ONLY", "Y" if new_sql_only else "N")
+        write_env_key("SQL_TUNING_ONLY", "Y" if new_tuning_only else "N")
+        write_env_key("SQL_FORMATTING_ONLY", "Y" if new_formatting_only else "N")
+        write_env_key("SUPERVISOR_MODE", "Y" if new_supervisor_mode else "N")
         st.toast("Agent 선택 설정을 저장했습니다. 실행 중인 Agent에는 재시작 후 적용됩니다.")
         st.rerun()
 
-    if not any((new_db_only, new_sql_only, new_tuning_only, new_formatting_only)):
-        st.caption("전체 실행: 모든 Agent를 실행합니다.")
-    else:
+    if new_only_enabled:
         selected_agents = []
         if new_db_only:
             selected_agents.append("DB")
@@ -136,15 +164,27 @@ with st.sidebar:
         if new_formatting_only:
             selected_agents.append("Formatting")
         st.caption("선택 실행: " + ", ".join(selected_agents))
+        st.caption("선택 실행 활성화 시 Supervisor는 자동으로 비활성화됩니다.")
     if new_supervisor_mode:
         st.caption("🤖 Supervisor 모드 활성화")
 
     st.markdown("---")
     st.markdown("#### ⚙️ Agent 제어")
+    if st.session_state.get("agent_control_pending"):
+        st.info("Agent 제어 요청 처리 중입니다.")
     _run_pending_agent_control()
 
     status = get_status()
     st.markdown(f"**{status['label']}**" + (f"  `PID {status['pid']}`" if status["pid"] else ""))
+    active_job = status.get("active_job")
+    if active_job:
+        st.caption(
+            f"진행 중: {active_job.get('agent') or '-'}"
+            f" / ID {active_job.get('id') or '-'}"
+            f" / {active_job.get('stage') or '-'}"
+        )
+        if active_job.get("started_at"):
+            st.caption(f"시작: {active_job['started_at']}")
 
     if not status["running"]:
         if st.button("▶️ 시작", width="stretch", type="primary"):

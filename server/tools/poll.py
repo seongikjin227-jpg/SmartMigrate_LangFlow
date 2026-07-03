@@ -39,6 +39,13 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "t", "y", "yes", "on"}
+
+
 MIGRATION_JOB_BATCH_SIZE = _env_int("MIGRATION_JOB_BATCH_SIZE", 1)
 SQL_CONVERSION_JOB_BATCH_SIZE = _env_int("SQL_CONVERSION_JOB_BATCH_SIZE", 1)
 SQL_TUNING_JOB_BATCH_SIZE = _env_int("SQL_TUNING_JOB_BATCH_SIZE", 1)
@@ -49,10 +56,10 @@ def _agent_flags() -> tuple[bool, bool, bool, bool]:
     """현재 .env 설정에서 에이전트별 실행 여부를 반환합니다.
     반환: (run_mig, run_sql, run_tuning, run_formatting)
     모두 false이면 전체 실행, 하나라도 true이면 선택된 것만 실행합니다."""
-    mig_only  = os.getenv("DB_MIGRATION_ONLY",   "false").lower() == "true"
-    sql_only  = os.getenv("SQL_CONVERSION_ONLY",  "false").lower() == "true"
-    tune_only = os.getenv("SQL_TUNING_ONLY",      "false").lower() == "true"
-    fmt_only  = os.getenv("SQL_FORMATTING_ONLY",  "false").lower() == "true"
+    mig_only  = _env_bool("DB_MIGRATION_ONLY")
+    sql_only  = _env_bool("SQL_CONVERSION_ONLY")
+    tune_only = _env_bool("SQL_TUNING_ONLY")
+    fmt_only  = _env_bool("SQL_FORMATTING_ONLY")
 
     has_selection = mig_only or sql_only or tune_only or fmt_only
     if not has_selection:
