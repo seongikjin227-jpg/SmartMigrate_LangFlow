@@ -2,6 +2,8 @@ import time
 
 from langchain_core.tools import tool
 
+from server.services.sql.statuses import is_conversion_pass
+from server.tools.sql_chain import run_tuning_continuation
 from server.tools.context import (
     callbacks,
     claim_job_execution,
@@ -28,9 +30,13 @@ def run_sql_conversion(row_id: str) -> str:
         callbacks["sql_inc"](row_key)
         final_status = callbacks["sql_proc"](job)
         record_agent_run("SQL_MIGRATION", time.perf_counter() - started, final_status)
+        chain_results = []
+        if is_conversion_pass(final_status):
+            chain_results = run_tuning_continuation(row_key, logger=logger)
         if logger:
-            logger.info(f"[SqlConversionTool] row_id={row_key} completed")
-        return f"SqlConversion row_id={row_key} completed"
+            logger.info(f"[SqlConversionTool] row_id={row_key} completed (status={final_status})")
+        suffix = f" | {' | '.join(chain_results)}" if chain_results else ""
+        return f"SqlConversion row_id={row_key} completed status={final_status}{suffix}"
     except Exception as exc:
         record_agent_run("SQL_MIGRATION", time.perf_counter() - started, "FAIL")
         if logger:

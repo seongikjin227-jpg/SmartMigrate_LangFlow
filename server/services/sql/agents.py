@@ -25,7 +25,6 @@ from server.services.sql.binding_service import bind_sets_to_json, build_bind_se
 from server.services.sql.llm_service import (
     generate_bind_sql,
     generate_bind_tuned_sql,
-    generate_formatted_sql,
     generate_sql_comparison_test_sql,
     generate_test_sql,
     generate_tobe_sql,
@@ -379,16 +378,6 @@ class SqlTuningAgent:
             logger.warning(
                 f"[{self.name}] ({state.job_key}) stage=TUNING_RETRY_CONTEXT "
                 f"attempt={tuning_attempt + 1}/{max_tuning_attempts} last_error={state.last_error}"
-            )
-
-        if state.tuned_test in (TUNING_PASS, PASS_NON_SELECT):
-            state.formatted_sql = generate_formatted_sql(
-                job=state.job,
-                input_sql=state.tuned_sql or state.tobe_sql,
-            )
-            logger.info(
-                f"[{self.name}] ({state.job_key}) stage=GENERATE_FORMATTED_SQL "
-                f"completed (sql_length={len(state.formatted_sql)})"
             )
 
     def _apply_tuning_rules(self, state: JobExecutionState) -> None:

@@ -2,6 +2,8 @@ import time
 
 from langchain_core.tools import tool
 
+from server.services.sql.statuses import is_tuning_pass
+from server.tools.sql_chain import run_formatting_continuation
 from server.tools.context import (
     callbacks,
     claim_job_execution,
@@ -31,7 +33,9 @@ def run_sql_tuning(row_ids: list) -> str:
             callbacks["sql_inc"](row_key)
             final_status = callbacks["tune_proc"](job)
             record_agent_run("SQL_TUNING", time.perf_counter() - started, final_status)
-            results.append(f"row_id={row_id} completed")
+            results.append(f"row_id={row_id} completed status={final_status}")
+            if is_tuning_pass(final_status):
+                results.extend(run_formatting_continuation(row_key, logger=logger))
         except Exception as exc:
             record_agent_run("SQL_TUNING", time.perf_counter() - started, "FAIL")
             if logger:

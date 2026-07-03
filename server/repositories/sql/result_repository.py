@@ -240,6 +240,42 @@ def get_pending_jobs() -> list[SqlInfoJob]:
         logger.error(f"[Repo] SqlPipeline 대기 작업 조회 중 오류: {e}")
     return jobs
 
+
+def get_sql_job_by_row_id(row_id: str) -> SqlInfoJob | None:
+    table = get_result_table()
+    available_columns = _get_available_columns(table)
+    select_correct_cols = ", ".join(
+        column
+        if column in available_columns
+        else f"CAST(NULL AS VARCHAR2(4000)) AS {column}"
+        for column in ("TOBE_CORRECT_SQL", "BIND_CORRECT_SQL", "TEST_CORRECT_SQL")
+    )
+    tuned_sql_column = "TUNED_SQL" if "TUNED_SQL" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS TUNED_SQL"
+    tuned_test_column = "TUNED_TEST" if "TUNED_TEST" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS TUNED_TEST"
+    fr_bindtuned_sql_column = "FR_BINDTUNED_SQL" if "FR_BINDTUNED_SQL" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS FR_BINDTUNED_SQL"
+    sql_length_column = "SQL_LENGTH" if "SQL_LENGTH" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS SQL_LENGTH"
+    map_type_column = "MAP_TYPE" if "MAP_TYPE" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS MAP_TYPE"
+    formatted_sql_column = "FORMATTED_SQL" if "FORMATTED_SQL" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS FORMATTED_SQL"
+    tuned_result_column = "TUNED_RESULT" if "TUNED_RESULT" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS TUNED_RESULT"
+    query = f"""
+        SELECT ROWIDTOCHAR(ROWID) AS RID,
+               TAG_KIND, SPACE_NM, SQL_ID, FR_SQL_TEXT, TARGET_TABLE, EDIT_FR_SQL,
+               TO_SQL_TEXT, {tuned_sql_column}, {tuned_test_column}, BIND_SQL, BIND_SET, TEST_SQL, STATUS, LOG,
+               UPD_TS, EDITED_YN, {fr_bindtuned_sql_column}, {select_correct_cols}, {sql_length_column}, {map_type_column}, {formatted_sql_column}, {tuned_result_column}
+        FROM {table}
+        WHERE ROWID = CHARTOROWID(:1)
+    """
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, [row_id])
+            row = cursor.fetchone()
+            return _row_to_sql_info_job(row) if row else None
+    except Exception as e:
+        logger.error(f"[Repo] SQL job lookup by ROWID failed: {e}")
+        return None
+
+
 def get_tuning_jobs() -> list:
     """Return unfinished tuning jobs under the retry limit."""
     table = get_result_table()

@@ -39,7 +39,6 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return default
 
 
-JOB_BATCH_SIZE = _env_int("SUPERVISOR_JOB_BATCH_SIZE", 20)
 MIGRATION_JOB_BATCH_SIZE = _env_int("MIGRATION_JOB_BATCH_SIZE", 1)
 SQL_CONVERSION_JOB_BATCH_SIZE = _env_int("SQL_CONVERSION_JOB_BATCH_SIZE", 1)
 SQL_TUNING_JOB_BATCH_SIZE = _env_int("SQL_TUNING_JOB_BATCH_SIZE", 1)
