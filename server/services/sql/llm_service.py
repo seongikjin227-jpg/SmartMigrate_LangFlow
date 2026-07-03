@@ -76,6 +76,10 @@ def _resolve_llm_provider(provider: str | None, base_url: str, model: str) -> st
     return "openai"
 
 
+def _is_complex_mapping_rule(rule: MappingRuleItem) -> bool:
+    return (rule.map_type or "").strip().upper() == "COMPLEX"
+
+
 def _serialize_mapping_rules(mapping_rules: list[MappingRuleItem], section_name: str = "MAPPING_RULES") -> str:
     if not mapping_rules:
         return f"[{section_name}]\n- (empty)"
@@ -84,6 +88,8 @@ def _serialize_mapping_rules(mapping_rules: list[MappingRuleItem], section_name:
     source_schema = _schema_env("ORACLE_SCHEMA_SRC")
     target_schema = _schema_env("ORACLE_SCHEMA_TGT")
     for rule in mapping_rules:
+        if _is_complex_mapping_rule(rule):
+            continue
         fr_table = _qualify_mapping_table(rule.fr_table, source_schema)
         to_table = _qualify_mapping_table(rule.to_table, target_schema)
         fr_col = (rule.fr_col or "").strip()
@@ -104,12 +110,38 @@ def _serialize_mapping_rules(mapping_rules: list[MappingRuleItem], section_name:
     return "\n".join(lines)
 
 
+def _serialize_complex_mapping_rules(mapping_rules: list[MappingRuleItem]) -> str:
+    rows: set[tuple[str, str]] = set()
+    target_schema = _schema_env("ORACLE_SCHEMA_TGT")
+    for rule in mapping_rules:
+        if not _is_complex_mapping_rule(rule):
+            continue
+        fr_table = (rule.fr_table or "").strip()
+        to_table = _qualify_mapping_table(rule.to_table, target_schema)
+        if fr_table and to_table:
+            rows.add((fr_table, to_table))
+
+    lines = ["[COMPLEX_TABLE_MAPPING_RULES]"]
+    if not rows:
+        lines.append("- (empty)")
+        return "\n".join(lines)
+
+    for fr_table, to_table in sorted(rows):
+        lines.append(f"- FR_TABLE={fr_table} | TO_TABLE={to_table}")
+    return "\n".join(lines)
+
+
 def _serialize_sql_conversion_mapping_rules(
     migration_rules: list[MappingRuleItem],
     conversion_general_rules: list[dict[str, Any]],
     conversion_examples: list[dict[str, Any]],
 ) -> str:
-    sections = [_serialize_mapping_rules(migration_rules, section_name="MIGRATION_MAPPING_RULES"), ""]
+    sections = [
+        _serialize_mapping_rules(migration_rules, section_name="MIGRATION_MAPPING_RULES"),
+        "",
+        _serialize_complex_mapping_rules(migration_rules),
+        "",
+    ]
     sections.append("[UNMAPPED_NAME_POLICY]")
     sections.append(
         "- If a source table or column has no matching MIGRATION_MAPPING_RULES entry, keep the original table or column name unchanged."
