@@ -154,6 +154,7 @@ class TobeSqlGenerationAgent:
                     job=state.job,
                     last_error=state.last_error,
                     bind_source_sql=bind_source_sql,
+                    mapping_rules=state.mapping_rules,
                 )
             logger.info(
                 f"[{self.name}] ({state.job_key}) stage=GENERATE_BIND_SQL "

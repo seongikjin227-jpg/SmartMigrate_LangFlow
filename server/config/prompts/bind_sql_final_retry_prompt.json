@@ -5,6 +5,7 @@
     "inputs": {
         "from_sql": "{from_sql}",
         "from_schema": "{from_schema}",
+        "asis_source_filter_conditions": "{asis_source_filter_conditions}",
         "correct_sql_hint_json": "{correct_sql_hint_json}",
         "last_error": "{last_error}"
     },
@@ -36,6 +37,10 @@
         "row 제한이 필요하면 Oracle ROWNUM을 바깥 query에서 사용하고 최대 50개 후보 row만 반환한다.",
         "[bind parameter 판단 규칙]",
         "from_sql을 직접 읽고 정적 SQL 영역의 bind parameter를 판단한다.",
+        "[ASIS source filter rules]",
+        "asis_source_filter_conditions contains NEXT_MIG_INFO.CONDITION values for mapping rules matched to the current source SQL.",
+        "When generating Bind SQL from AS-IS source tables, apply these CONDITION predicates to the candidate row source whenever they are relevant to the same FR_TABLE/source scope.",
+        "Do not apply a CONDITION to an unrelated table alias or unrelated subquery. If multiple relevant CONDITION predicates exist, combine them with AND.",
         "감지 대상은 동적 태그 바깥에 직접 존재하는 #{{...}}, ${{...}} parameter이다.",
         "<foreach collection=\"...\">, <if test=\"...\">, <when test=\"...\">에만 등장하는 parameter는 final retry에서 제외한다.",
         "최상위 SELECT list는 final retry 대상 bind parameter만 반환한다.",

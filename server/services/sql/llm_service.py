@@ -131,6 +131,27 @@ def _serialize_complex_mapping_rules(mapping_rules: list[MappingRuleItem]) -> st
     return "\n".join(lines)
 
 
+def _serialize_asis_source_filter_conditions(mapping_rules: list[MappingRuleItem]) -> str:
+    rows: set[tuple[str, str]] = set()
+    for rule in mapping_rules:
+        condition = (rule.condition or "").strip()
+        fr_table = (rule.fr_table or "").strip()
+        if condition:
+            rows.add((fr_table, condition))
+
+    lines = ["[ASIS_SOURCE_FILTER_CONDITIONS]"]
+    if not rows:
+        lines.append("- (empty)")
+        return "\n".join(lines)
+
+    for fr_table, condition in sorted(rows):
+        if fr_table:
+            lines.append(f"- FR_TABLE={fr_table} | CONDITION={condition}")
+        else:
+            lines.append(f"- CONDITION={condition}")
+    return "\n".join(lines)
+
+
 def _serialize_sql_conversion_mapping_rules(
     migration_rules: list[MappingRuleItem],
     conversion_general_rules: list[dict[str, Any]],
@@ -860,9 +881,12 @@ def generate_bind_sql(
     job: SqlInfoJob,
     last_error: str | None = None,
     bind_source_sql: str | None = None,
+    mapping_rules: list[MappingRuleItem] | None = None,
 ) -> str:
     template_name = "bind_sql_final_retry_prompt.json" if _is_final_retry_mode(last_error) else "bind_sql_prompt.json"
     source_sql = bind_source_sql or job.source_sql
+    scoped_rules = _select_mapping_rules_for_job(job=job, mapping_rules=mapping_rules or [])
+    asis_source_filter_conditions = _serialize_asis_source_filter_conditions(scoped_rules)
     correct_sql_hints = correct_sql_hint_rag_service.retrieve_correct_sql_hints(
         sql_text=job.source_sql,
         correct_kind="BIND",
@@ -877,6 +901,7 @@ def generate_bind_sql(
             template_name,
             from_sql=source_sql,
             from_schema=_schema_env("ORACLE_SCHEMA_SRC") or "UNKNOWN",
+            asis_source_filter_conditions=asis_source_filter_conditions,
             correct_sql_hint_json=serialize_correct_sql_hints_for_prompt(correct_sql_hints),
             last_error=last_error or "None",
         ),

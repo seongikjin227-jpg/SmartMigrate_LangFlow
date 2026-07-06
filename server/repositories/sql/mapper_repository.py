@@ -65,8 +65,13 @@ def get_all_mapping_rules() -> list[MappingRuleItem]:
         if "DESCRIPTION" in map_columns
         else "CAST(NULL AS VARCHAR2(4000)) AS DESCRIPTION"
     )
+    condition_expr = (
+        "M.CONDITION"
+        if "CONDITION" in map_columns
+        else "CAST(NULL AS VARCHAR2(4000)) AS CONDITION"
+    )
     query = f"""
-        SELECT M.MAP_TYPE, M.FR_TABLE, D.FR_COL, M.TO_TABLE, D.TO_COL, {description_expr}
+        SELECT M.MAP_TYPE, M.FR_TABLE, D.FR_COL, M.TO_TABLE, D.TO_COL, {description_expr}, {condition_expr}
         FROM {map_table} M
         JOIN {detail_table} D
           ON M.MAP_ID = D.MAP_ID
@@ -87,6 +92,7 @@ def get_all_mapping_rules() -> list[MappingRuleItem]:
                     to_table=_to_text(row[3]),
                     to_col=_to_text(row[4]),
                     description=_to_text(row[5]),
+                    condition=_to_text(row[6]),
                 )
             )
     return rules

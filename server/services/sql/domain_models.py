@@ -50,4 +50,5 @@ class MappingRuleItem:
     to_table: str
     to_col: str
     description: str = ""
+    condition: str = ""
 
