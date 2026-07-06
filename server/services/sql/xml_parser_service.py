@@ -67,6 +67,9 @@ _SQL_TABLE_NOISE_WORDS = {
 }
 
 
+_CONVERSION_STATUS_COLUMN = "STATUS_CONVERSION"
+
+
 @dataclass
 class ParsedSqlItem:
     tag_kind: str
@@ -1161,12 +1164,13 @@ def strip_schema_qualifiers_from_next_sql_info() -> dict[str, int]:
 
     ready_updated = 0
     if updates:
+        status_column = _CONVERSION_STATUS_COLUMN
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.executemany(
                 f"""
                 UPDATE {result_table}
-                SET STATUS = 'READY',
+                SET {status_column} = 'READY',
                     UPD_TS = CURRENT_TIMESTAMP
                 WHERE ROWID = CHARTOROWID(:1)
                 """,
@@ -1376,6 +1380,3 @@ def _main():
 
 if __name__ == "__main__":
     _main()
-
-
-

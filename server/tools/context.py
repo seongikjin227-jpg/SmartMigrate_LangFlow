@@ -170,7 +170,7 @@ def record_agent_run(agent_name: str, elapsed_seconds: float, status: str) -> No
     metric["elapsed_seconds"] += max(0.0, elapsed_seconds)
     if normalized_status in ("SKIP", "NA", "WAITING", "PENDING"):
         metric["skip_count"] += 1
-    elif normalized_status in ("SUCCESS", "PASS", "CONVERSION-PASS", "TUNING-PASS", "TUNING_PASS", "PASS_NON_SELECT"):
+    elif normalized_status in ("SUCCESS", "PASS", "PASS-CONVERSION", "PASS-TUNING"):
         metric["success_count"] += 1
     else:
         metric["fail_count"] += 1

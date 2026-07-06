@@ -209,18 +209,18 @@ def _render_sql_job_detail():
         return
 
     df = pd.DataFrame(jobs)
-    for col in ("STATUS", "TUNED_TEST", "SQL_ID", "SPACE_NM"):
+    for col in ("STATUS_CONVERSION", "STATUS_TUNING", "SQL_ID", "SPACE_NM"):
         if col not in df.columns:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str)
 
     filter_cols = st.columns([1.2, 1.2, 2, 2])
     with filter_cols[0]:
-        status_options = ["전체"] + sorted([v for v in df["STATUS"].unique().tolist() if v])
-        sel_status = st.selectbox("STATUS", status_options, key="sql_job_detail_status")
+        status_options = ["전체"] + sorted([v for v in df["STATUS_CONVERSION"].unique().tolist() if v])
+        sel_status = st.selectbox("STATUS_CONVERSION", status_options, key="sql_job_detail_status")
     with filter_cols[1]:
-        tuned_status_options = ["전체"] + sorted([v for v in df["TUNED_TEST"].unique().tolist() if v])
-        sel_tuned_status = st.selectbox("TUNED_TEST", tuned_status_options, key="sql_job_detail_tuned_status")
+        tuned_status_options = ["전체"] + sorted([v for v in df["STATUS_TUNING"].unique().tolist() if v])
+        sel_tuned_status = st.selectbox("STATUS_TUNING", tuned_status_options, key="sql_job_detail_tuned_status")
     with filter_cols[2]:
         sql_id_query = st.text_input("SQL_ID 검색", placeholder="예: selectUser", key="sql_job_detail_sql_id")
     with filter_cols[3]:
@@ -228,9 +228,9 @@ def _render_sql_job_detail():
 
     filtered = df.copy()
     if sel_status != "전체":
-        filtered = filtered[filtered["STATUS"] == sel_status]
+        filtered = filtered[filtered["STATUS_CONVERSION"] == sel_status]
     if sel_tuned_status != "전체":
-        filtered = filtered[filtered["TUNED_TEST"] == sel_tuned_status]
+        filtered = filtered[filtered["STATUS_TUNING"] == sel_tuned_status]
     if sql_id_query.strip():
         filtered = filtered[filtered["SQL_ID"].str.contains(sql_id_query.strip(), case=False, na=False)]
     if namespace_query.strip():
@@ -251,8 +251,8 @@ def _render_sql_job_detail():
         labels = [
             (
                 f"{r.get('SPACE_NM') or '-'}.{r.get('SQL_ID') or '-'} "
-                f"| STATUS={r.get('STATUS') or 'NULL'} "
-                f"| TUNED_TEST={r.get('TUNED_TEST') or 'NULL'} "
+                f"| STATUS_CONVERSION={r.get('STATUS_CONVERSION') or 'NULL'} "
+                f"| STATUS_TUNING={r.get('STATUS_TUNING') or 'NULL'} "
                 f"| UPD_TS={r.get('UPD_TS') or '-'}"
             )
             for r in filtered_records
@@ -275,8 +275,7 @@ def _render_sql_job_detail():
         st.write(f"**SQL_ID:** {job.get('SQL_ID')}")
         st.write(f"**SPACE_NM:** {job.get('SPACE_NM')}")
     with c2:
-        st.metric("STATUS", job.get("STATUS") or "-")
-        st.write(f"**EDITED_YN:** {job.get('EDITED_YN')}")
+        st.metric("STATUS_CONVERSION", job.get("STATUS_CONVERSION") or "-")
     with c3:
         st.write(f"**TARGET_TABLE:** {job.get('TARGET_TABLE')}")
         st.write(f"**UPD_TS:** {job.get('UPD_TS')}")

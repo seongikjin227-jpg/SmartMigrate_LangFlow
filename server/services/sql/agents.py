@@ -43,7 +43,6 @@ from server.services.sql.statuses import (
     FAIL_TEST,
     FAIL_TUNED,
     FAIL_TOBE,
-    PASS_NON_SELECT,
     TUNING_PASS,
     is_fail,
 )
@@ -353,7 +352,7 @@ class SqlTuningAgent:
                 break
 
             if tag_kind != "SELECT":
-                state.tuned_test = PASS_NON_SELECT
+                state.tuned_test = TUNING_PASS
                 logger.info(
                     f"[{self.name}] ({state.job_key}) stage=PASS_TUNED_TEST_FOR_NON_SELECT "
                     f"completed (tag_kind={tag_kind or 'UNKNOWN'})"

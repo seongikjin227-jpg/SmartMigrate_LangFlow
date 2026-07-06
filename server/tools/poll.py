@@ -202,6 +202,7 @@ def build_poll_jobs_tool(
                     "tag_kind": job.tag_kind,
                     "space_nm": job.space_nm,
                     "sql_id": job.sql_id,
+                    "priority": getattr(job, "priority", None),
                 }
                 for job in sql_registry.values()
             ],

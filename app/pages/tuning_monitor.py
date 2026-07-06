@@ -12,8 +12,9 @@ _COLS_TABLE = [
     "ROW_ID",
     "SPACE_NM",
     "SQL_ID",
-    "STATUS",
-    "TUNED_TEST",
+    "STATUS_CONVERSION",
+    "STATUS_TUNING",
+    "PRIORITY",
     "SQL_LENGTH",
     "MAP_TYPE",
     "EFFECTIVE_FR_SQL_LEN",
@@ -151,9 +152,9 @@ def _render_detail_stack(row: dict, labels: list[str], side: str) -> None:
 def _label(row: pd.Series) -> str:
     namespace = row.get("SPACE_NM") or "-"
     sql_id = row.get("SQL_ID") or "-"
-    tuned_test = row.get("TUNED_TEST") or "-"
+    tuned_test = row.get("STATUS_TUNING") or "-"
     tuned_result = "NO TUNING" if _is_no_tuning(row.get("TUNED_RESULT")) else "TUNED"
-    return f"{namespace} / {sql_id} | TUNED_TEST={tuned_test} | {tuned_result}"
+    return f"{namespace} / {sql_id} | STATUS_TUNING={tuned_test} | {tuned_result}"
 
 
 def _prepare_df(rows: list[dict]) -> pd.DataFrame:
@@ -163,8 +164,8 @@ def _prepare_df(rows: list[dict]) -> pd.DataFrame:
         "SQL_ID",
         "SPACE_NM",
         "TAG_KIND",
-        "STATUS",
-        "TUNED_TEST",
+        "STATUS_CONVERSION",
+        "STATUS_TUNING",
         "TUNED_RESULT",
         "BLOCK_RAG_CONTENT",
         "SQL_LENGTH",
@@ -232,7 +233,7 @@ def render():
         st.error(f"DB 연결 실패: {e}")
         return
 
-    jobs = [j for j in all_jobs if j.get("TUNED_SQL") or j.get("TUNED_TEST") or j.get("TUNED_RESULT")]
+    jobs = [j for j in all_jobs if j.get("TUNED_SQL") or j.get("STATUS_TUNING") or j.get("TUNED_RESULT")]
 
     if not jobs:
         st.info("튜닝 대상 작업이 없습니다.")
@@ -263,9 +264,9 @@ def render():
 
         c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
-            sel_status = st.selectbox("STATUS", _options(df_all, "STATUS"))
+            sel_status = st.selectbox("STATUS_CONVERSION", _options(df_all, "STATUS_CONVERSION"))
         with c2:
-            sel_tune = st.selectbox("TUNED_TEST", _options(df_all, "TUNED_TEST"))
+            sel_tune = st.selectbox("STATUS_TUNING", _options(df_all, "STATUS_TUNING"))
         with c3:
             sel_map_type = st.selectbox("MAP_TYPE / map_kind", _options(df_all, "MAP_TYPE"))
         with c4:
@@ -308,9 +309,9 @@ def render():
         df = df[df["TUNED_RESULT"].str.strip() == ""]
 
     if sel_status != ALL:
-        df = df[df["STATUS"] == sel_status]
+        df = df[df["STATUS_CONVERSION"] == sel_status]
     if sel_tune != ALL:
-        df = df[df["TUNED_TEST"] == sel_tune]
+        df = df[df["STATUS_TUNING"] == sel_tune]
     if sel_map_type != ALL:
         df = df[df["MAP_TYPE"] == sel_map_type]
     if sel_sql_length != ALL:
@@ -412,7 +413,7 @@ def render():
 
     c_test, c_log = st.columns(2)
     with c_test:
-        st.write(f"**최종 검증:** {row.get('TUNED_TEST') or '-'}")
+        st.write(f"**최종 검증:** {row.get('STATUS_TUNING') or '-'}")
     with c_log:
         log = row.get("LOG") or ""
         if log:

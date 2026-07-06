@@ -31,7 +31,7 @@ _CORRECT_KIND_OPTIONS = {
 
 def _prepare_df(rows: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
-    for col in ("ROW_ID", "SQL_ID", "SPACE_NM", "STATUS", "TUNED_TEST", "MAP_TYPE", "TARGET_TABLE", "LOG"):
+    for col in ("ROW_ID", "SQL_ID", "SPACE_NM", "STATUS_CONVERSION", "STATUS_TUNING", "PRIORITY", "MAP_TYPE", "TARGET_TABLE", "LOG"):
         if col not in df.columns:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str)
@@ -53,8 +53,9 @@ def _options(df: pd.DataFrame, column: str) -> list[str]:
 def _job_label(row: pd.Series) -> str:
     return (
         f"{row.get('SPACE_NM') or '-'} / {row.get('SQL_ID') or '-'} "
-        f"| STATUS={row.get('STATUS') or 'NULL'} "
-        f"| TUNED_TEST={row.get('TUNED_TEST') or 'NULL'}"
+        f"| STATUS_CONVERSION={row.get('STATUS_CONVERSION') or 'NULL'} "
+        f"| STATUS_TUNING={row.get('STATUS_TUNING') or 'NULL'} "
+        f"| PRIORITY={row.get('PRIORITY') or '-'}"
     )
 
 
@@ -83,17 +84,17 @@ def render():
         with c2:
             namespace_query = st.text_input("SPACE_NM LIKE")
         with c3:
-            sel_status = st.selectbox("STATUS", _options(df_all, "STATUS"))
+            sel_status = st.selectbox("STATUS_CONVERSION", _options(df_all, "STATUS_CONVERSION"))
         with c4:
-            sel_tuned = st.selectbox("TUNED_TEST", _options(df_all, "TUNED_TEST"))
+            sel_tuned = st.selectbox("STATUS_TUNING", _options(df_all, "STATUS_TUNING"))
 
     df = df_all.copy()
     df = df[_contains(df["SQL_ID"], sql_id_query)]
     df = df[_contains(df["SPACE_NM"], namespace_query)]
     if sel_status != ALL:
-        df = df[df["STATUS"] == sel_status]
+        df = df[df["STATUS_CONVERSION"] == sel_status]
     if sel_tuned != ALL:
-        df = df[df["TUNED_TEST"] == sel_tuned]
+        df = df[df["STATUS_TUNING"] == sel_tuned]
 
     if df.empty:
         st.warning("조건에 맞는 SQL Job이 없습니다.")
@@ -115,9 +116,9 @@ def render():
     with m2:
         st.write(f"**SPACE_NM:** {detail.get('SPACE_NM') or '-'}")
     with m3:
-        st.metric("STATUS", detail.get("STATUS") or "-")
+        st.metric("STATUS_CONVERSION", detail.get("STATUS_CONVERSION") or "-")
     with m4:
-        st.metric("TUNED_TEST", detail.get("TUNED_TEST") or "-")
+        st.metric("STATUS_TUNING", detail.get("STATUS_TUNING") or "-")
 
     st.divider()
 

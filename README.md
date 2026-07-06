@@ -60,7 +60,7 @@ SQL_FORMATTING_ONLY=false
 | `URGENT` | conversion 우선 처리 대기 |
 | `READY` | conversion 일반 대기 |
 | `PENDING` | conversion 대기 |
-| `CONVERSION-PASS` | conversion 최종 성공 |
+| `PASS-CONVERSION` | conversion 최종 성공 |
 | `FAIL-TOBE` | TO-BE SQL 생성 또는 사용 stage 실패 |
 | `FAIL-BIND` | bind SQL 생성/실행 또는 bind set 생성 stage 실패 |
 | `FAIL-TEST` | test SQL 생성/실행 또는 검증 stage 실패 |
@@ -68,23 +68,22 @@ SQL_FORMATTING_ONLY=false
 | `NA` | mapping 미준비 등 처리 대상 제외 |
 | `NULL` | conversion 대기 |
 
-호환을 위해 기존 `PASS`, `FAIL`도 일부 조회/집계에서 읽습니다. 신규 저장은 `CONVERSION-PASS`, `FAIL-TOBE`, `FAIL-BIND`, `FAIL-TEST` 기준입니다.
+신규 저장은 `STATUS_CONVERSION`에 `PASS-CONVERSION`, `FAIL-TOBE`, `FAIL-BIND`, `FAIL-TEST` 기준으로 기록합니다.
 
-### Tuning: `TUNED_TEST`
+### Tuning: `STATUS_TUNING`
 
 | 상태 | 의미 |
 | --- | --- |
 | `URGENT` | tuning 우선 처리 대기 |
 | `READY` | tuning 일반 대기 |
-| `TUNING-PASS` | tuning 최종 성공 |
-| `PASS_NON_SELECT` | non-SELECT라 tuned validation을 생략했지만 성공 처리 |
+| `PASS-TUNING` | tuning 최종 성공. non-SELECT는 tuned validation을 생략해도 동일하게 성공 처리 |
 | `FAIL-TUNED` | tuned SQL 생성 stage 실패 |
 | `FAIL-BIND` | tuned test용 bind 관련 stage 실패 |
 | `FAIL-TEST` | tuned test SQL 생성/실행 또는 검증 stage 실패 |
 | `NULL` | tuning 대상 아님 또는 conversion 미완료 |
 | `NA` | tuning 제외 |
 
-호환을 위해 기존 `PASS`, `TUNING_PASS`, `FAIL`도 일부 조회/집계에서 읽습니다. 신규 저장은 `TUNING-PASS`, `FAIL-TUNED`, `FAIL-BIND`, `FAIL-TEST` 기준입니다.
+신규 저장은 `STATUS_TUNING`에 `PASS-TUNING`, `FAIL-TUNED`, `FAIL-BIND`, `FAIL-TEST` 기준으로 기록합니다.
 
 ## SQL Conversion 흐름
 
@@ -97,14 +96,14 @@ NEXT_SQL_INFO polling
   -> bind SQL 생성/실행 또는 BIND_CORRECT_SQL 사용
   -> BIND_SET 생성
   -> test SQL 생성/실행 또는 TEST_CORRECT_SQL 사용
-  -> STATUS = CONVERSION-PASS 또는 FAIL-* 저장
-  -> 성공 시 TUNED_TEST = READY
+  -> STATUS_CONVERSION = PASS-CONVERSION 또는 FAIL-* 저장
+  -> 성공 시 STATUS_TUNING = READY
 ```
 
 Conversion polling 대상:
 
 - 포함: `URGENT`, `READY`, `PENDING`, 기존 `FAIL`, `FAIL-TOBE`, `FAIL-BIND`, `FAIL-TEST`, `NULL`
-- 제외: `SKIP`, `NA`, `CONVERSION-PASS`, 기존 성공 `PASS`
+- 제외: `SKIP`, `NA`, `PASS-CONVERSION`, 기존 성공 `PASS`
 
 `SqlInfoJob.source_sql`은 `EDIT_FR_SQL`이 있으면 그것을 우선 사용하고, 없으면 `FR_SQL_TEXT`를 사용합니다. SQL Conversion RAG 검색도 이 기준 SQL을 block 단위로 나누어 수행합니다.
 
@@ -206,8 +205,8 @@ ON SFAADM.NEXT_MIG_RAG_INFO (CATEGORY, RULE_TYPE, USE_YN);
 
 Tuning polling 대상:
 
-- 조건: `STATUS IN ('CONVERSION-PASS', 'PASS')`, `TO_SQL_TEXT IS NOT NULL`
-- 포함: `TUNED_TEST IN ('URGENT', 'READY', 기존 'FAIL', 'FAIL-TUNED', 'FAIL-BIND', 'FAIL-TEST')`
+- 조건: `STATUS_CONVERSION IN ('PASS-CONVERSION', 'PASS')`, `TO_SQL_TEXT IS NOT NULL`
+- 포함: `STATUS_TUNING IN ('URGENT', 'READY', 'FAIL', 'FAIL-TUNED', 'FAIL-BIND', 'FAIL-TEST')`
 
 SELECT:
 
@@ -216,7 +215,7 @@ TO-BE SQL
   -> SQL_TUNING RAG 조회
   -> TUNED_SQL / TUNED_RESULT 생성
   -> baseline TO-BE vs tuned SQL 비교 test SQL 생성/실행
-  -> TUNED_TEST = TUNING-PASS 또는 FAIL-TEST
+  -> STATUS_TUNING = PASS-TUNING 또는 FAIL-TEST
   -> 성공 시 FORMATTED_SQL 생성
 ```
 
@@ -227,11 +226,11 @@ TO-BE SQL
   -> SQL_TUNING RAG 조회
   -> TUNED_SQL / TUNED_RESULT 생성
   -> tuned validation 생략
-  -> TUNED_TEST = PASS_NON_SELECT
+  -> STATUS_TUNING = PASS-TUNING
   -> FORMATTED_SQL 생성
 ```
 
-별도 SQL Formatting agent는 보정용입니다. `TUNED_TEST`가 tuning pass 계열인데 `FORMATTED_SQL`이 비어 있는 row만 다시 포맷팅합니다.
+별도 SQL Formatting agent는 보정용입니다. `STATUS_TUNING`이 tuning pass 계열인데 `FORMATTED_SQL`이 비어 있는 row만 다시 포맷팅합니다.
 
 ## Streamlit 화면
 
@@ -355,4 +354,4 @@ python -m json.tool server/config/prompts/bind_tuned_sql_prompt.json
 - `FORMATTED_SQL`은 XML export 기준 SQL입니다.
 - `NA`는 mapping 미준비 등 처리 대상 제외 상태입니다.
 - `SKIP`은 사용자가 의도적으로 제외한 상태입니다.
-- fail analysis는 conversion `STATUS`의 `FAIL-*`, tuning `TUNED_TEST`의 `FAIL-*`를 기준으로 stage 분포를 보여줍니다.
+- fail analysis는 conversion `STATUS_CONVERSION`의 `FAIL-*`, tuning `STATUS_TUNING`의 `FAIL-*`를 기준으로 stage 분포를 보여줍니다.

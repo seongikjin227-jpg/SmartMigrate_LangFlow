@@ -146,20 +146,20 @@ def _classify_sql_fail_log(log_text: str) -> str:
     return "NO_LOG"
 
 def _classify_fail_stage(row: dict, agent: str) -> str:
-    status_key = "TUNED_TEST" if "TUNING" in (agent or "").upper() else "STATUS"
+    status_key = "STATUS_TUNING" if "TUNING" in (agent or "").upper() else "STATUS_CONVERSION"
     explicit_status = str(row.get(status_key) or "").strip().upper()
     if explicit_status in {"FAIL-TOBE", "FAIL-TUNED", "FAIL-BIND", "FAIL-TRUNCATE", "FAIL-INSERT", "FAIL-TEST"}:
         return explicit_status
 
     text = " ".join(
         str(row.get(key) or "")
-        for key in ("LOG", "STATUS", "TUNED_TEST")
+        for key in ("LOG", "STATUS_CONVERSION", "STATUS_TUNING")
     ).upper()
     agent_key = (agent or "").upper()
 
     if "TUNING" in agent_key:
         patterns = [
-            ("TUNING_TEST", ["TUNED_TEST", "TEST_VALIDATION", "VALIDATION_FAIL", "BASELINE_COUNT", "TUNED_COUNT"]),
+            ("TUNING_TEST", ["STATUS_TUNING", "TEST_VALIDATION", "VALIDATION_FAIL", "BASELINE_COUNT", "TUNED_COUNT"]),
             ("TUNING_SQL_GENERATION", ["TUNED_SQL", "GENERATE_TUNED_SQL", "TUNING_ERROR"]),
             ("TUNING_LLM_RESPONSE", ["LLM", "MODEL", "JSON", "RESPONSE", "PARSE"]),
             ("TUNING_BIND_OR_PARAM", ["BIND", "ORA-01008", "ORA-01036"]),
@@ -214,15 +214,16 @@ def _summarize_sql_fail_rows(rows: list[dict], stage: str) -> dict:
         log_type_counts[log_type] += 1
         fail_stage = _classify_fail_stage(row, stage)
         fail_stage_counts[fail_stage] += 1
-        status_counts[str(row.get("STATUS") or "NULL").strip() or "NULL"] += 1
+        status_key = "STATUS_TUNING" if "TUNING" in stage.upper() else "STATUS_CONVERSION"
+        status_counts[str(row.get(status_key) or "NULL").strip() or "NULL"] += 1
         if len(samples) < 30:
             samples.append({
                 "sql_id": row.get("SQL_ID"),
                 "space_nm": row.get("SPACE_NM"),
                 "map_kind": map_kind,
                 "length_bucket": _length_bucket(row),
-                "status": row.get("STATUS"),
-                "tuned_test": row.get("TUNED_TEST"),
+                "status_conversion": row.get("STATUS_CONVERSION"),
+                "status_tuning": row.get("STATUS_TUNING"),
                 "fail_stage": fail_stage,
                 "log_type": log_type,
                 "log": str(row.get("LOG") or "")[:800],
@@ -389,7 +390,7 @@ _SUPERVISOR_TOOLS = [
             "name": "analyze_sql_conversion_failures",
             "description": (
                 "최근 SQL Conversion FAIL 전체를 종합 분석합니다. "
-                "NEXT_SQL_INFO에서 STATUS가 FAIL 계열(FAIL/FAIL-TOBE/FAIL-BIND/FAIL-TEST)인 row를 모아 MAP_TYPE/TAG_KIND, SQL 길이 구간, "
+                "NEXT_SQL_INFO에서 STATUS_CONVERSION이 FAIL 계열(FAIL/FAIL-TOBE/FAIL-BIND/FAIL-TEST)인 row를 모아 MAP_TYPE/TAG_KIND, SQL 길이 구간, "
                 "LOG 에러 유형별 건수와 주요 원인 추정을 생성할 때 사용하세요."
             ),
             "parameters": {
@@ -409,7 +410,7 @@ _SUPERVISOR_TOOLS = [
             "name": "analyze_sql_tuning_failures",
             "description": (
                 "최근 SQL Tuning FAIL 전체를 종합 분석합니다. "
-                "NEXT_SQL_INFO에서 TUNED_TEST가 FAIL 계열(FAIL/FAIL-TUNED/FAIL-BIND/FAIL-TEST)인 row를 모아 MAP_TYPE/TAG_KIND, SQL 길이 구간, "
+                "NEXT_SQL_INFO에서 STATUS_TUNING이 FAIL 계열(FAIL/FAIL-TUNED/FAIL-BIND/FAIL-TEST)인 row를 모아 MAP_TYPE/TAG_KIND, SQL 길이 구간, "
                 "LOG 에러 유형별 건수와 주요 원인 추정을 생성할 때 사용하세요."
             ),
             "parameters": {
@@ -448,7 +449,7 @@ _SUPERVISOR_TOOLS = [
             "name": "rerun_sql_conversion",
             "description": (
                 "SQL 변환 작업을 즉시 재실행합니다. "
-                "NEXT_SQL_INFO.STATUS를 'URGENT'로 설정하고 Supervisor를 즉시 깨웁니다. "
+                "NEXT_SQL_INFO.STATUS_CONVERSION을 'URGENT'로 설정하고 Supervisor를 즉시 깨웁니다. "
                 "사용자가 SQL 변환 재실행을 요청할 때 사용하세요."
             ),
             "parameters": {
@@ -467,7 +468,7 @@ _SUPERVISOR_TOOLS = [
             "name": "rerun_sql_tuning",
             "description": (
                 "SQL 튜닝 작업을 즉시 재실행합니다. "
-                "NEXT_SQL_INFO.TUNED_TEST를 'URGENT'로 설정하고 Supervisor를 즉시 깨웁니다. "
+                "NEXT_SQL_INFO.STATUS_TUNING을 'URGENT'로 설정하고 Supervisor를 즉시 깨웁니다. "
                 "사용자가 SQL 튜닝 재실행을 요청할 때 사용하세요."
             ),
             "parameters": {
@@ -524,8 +525,8 @@ def _handle_supervisor_tool(name: str, args: dict) -> str:
                 "rows": [
                     {
                         "space_nm":   r.get("SPACE_NM"),
-                        "status":     r.get("STATUS"),
-                        "tuned_test": r.get("TUNED_TEST"),
+                        "status_conversion": r.get("STATUS_CONVERSION"),
+                        "status_tuning":     r.get("STATUS_TUNING"),
                         "log":        str(r.get("LOG") or "")[:500],
                     }
                     for r in rows
@@ -608,7 +609,7 @@ def _handle_supervisor_tool(name: str, args: dict) -> str:
                 "After the requested job, call flush_cycle_metrics() and finish."
             )
             _start_supervisor_for_one_shot()
-            result = poll_sql_job_result(sql_id, field="STATUS", space_nm=space_nm, timeout_sec=300)
+            result = poll_sql_job_result(sql_id, field="STATUS_CONVERSION", space_nm=space_nm, timeout_sec=300)
             return json.dumps(result, ensure_ascii=False, default=str)
 
         if name == "rerun_sql_tuning":
@@ -642,7 +643,7 @@ def _handle_supervisor_tool(name: str, args: dict) -> str:
                 "After the requested job, call flush_cycle_metrics() and finish."
             )
             _start_supervisor_for_one_shot()
-            result = poll_sql_job_result(sql_id, field="TUNED_TEST", space_nm=space_nm, timeout_sec=300)
+            result = poll_sql_job_result(sql_id, field="STATUS_TUNING", space_nm=space_nm, timeout_sec=300)
             return json.dumps(result, ensure_ascii=False, default=str)
 
         return json.dumps({"error": f"알 수 없는 도구: {name}"})
@@ -923,7 +924,7 @@ def _fetch_sql_context(sql_pairs: list[tuple[str, str | None]]) -> str:
                 lines.append("  - 해당 SQL_ID 없음")
                 continue
             for r in rows:
-                lines.append(f"  - STATUS: {r.get('STATUS') or 'NULL'}, TUNED_TEST: {r.get('TUNED_TEST') or 'NULL'}")
+                lines.append(f"  - STATUS_CONVERSION: {r.get('STATUS_CONVERSION') or 'NULL'}, STATUS_TUNING: {r.get('STATUS_TUNING') or 'NULL'}")
                 log_text = r.get("LOG") or ""
                 if log_text:
                     lines.append(f"  - LOG: {str(log_text)[:300]}")
@@ -1009,8 +1010,8 @@ def _call_llm(chat_messages: list[dict], supervisor_mode: bool = False) -> str:
 # ── 오른쪽 상태 패널 ───────────────────────────────────────────────────────────
 _ICON = {
     "PASS": "✅",
-    "CONVERSION-PASS": "✅",
-    "TUNING-PASS": "✅",
+    "PASS-CONVERSION": "✅",
+    "PASS-TUNING": "✅",
     "PASS (non-select)": "✅",
     "FAIL": "❌",
     "FAIL-TOBE": "❌",
@@ -1029,8 +1030,8 @@ _ICON = {
 }
 _CLR = {
     "PASS": "badge-pass",
-    "CONVERSION-PASS": "badge-pass",
-    "TUNING-PASS": "badge-pass",
+    "PASS-CONVERSION": "badge-pass",
+    "PASS-TUNING": "badge-pass",
     "PASS (non-select)": "badge-pass",
     "FAIL": "badge-fail",
     "FAIL-TOBE": "badge-fail",
@@ -1041,8 +1042,8 @@ _CLR = {
     "FAIL-TEST": "badge-fail",
 }
 _STATUS_ORDER = [
-    "CONVERSION-PASS",
-    "TUNING-PASS",
+    "PASS-CONVERSION",
+    "PASS-TUNING",
     "PASS",
     "PASS (non-select)",
     "FAIL-TOBE",
@@ -1091,7 +1092,7 @@ def _dashboard_status(status, title: str = "") -> str | None:
         return "FAIL"
     if (
         normalized in {
-            "PASS_NON_SELECT",
+            "PASS-TUNING",
             "PASS (NON-SELECT)",
             "PASS(NON-SELECT)",
             "PASS NON SELECT",
@@ -1101,23 +1102,23 @@ def _dashboard_status(status, title: str = "") -> str | None:
         or "NON-SELECT" in normalized
     ):
         return "PASS (non-select)"
-    if normalized in {"TUNING-PASS", "TUNING_PASS"}:
-        return "TUNING-PASS"
-    if normalized == "CONVERSION-PASS":
-        return "CONVERSION-PASS"
+    if normalized == "PASS-TUNING":
+        return "PASS-TUNING"
+    if normalized == "PASS-CONVERSION":
+        return "PASS-CONVERSION"
     if normalized == "PASS":
         if _is_tuning_title(title):
-            return "TUNING-PASS"
+            return "PASS-TUNING"
         if _is_mig_title(title):
             return "PASS"
-        return "CONVERSION-PASS"
+        return "PASS-CONVERSION"
     return normalized
 
 def _rate_values(title: str, normalized: dict[str, int]) -> tuple[int, int, int, int]:
     pass_count = (
         normalized.get("PASS", 0)
-        + normalized.get("CONVERSION-PASS", 0)
-        + normalized.get("TUNING-PASS", 0)
+        + normalized.get("PASS-CONVERSION", 0)
+        + normalized.get("PASS-TUNING", 0)
     )
     pass_non_select_count = normalized.get("PASS (non-select)", 0)
     fail_count = sum(
@@ -1318,7 +1319,7 @@ def _formatting_card(summary: dict):
           <div class="rate-sub">포맷팅 대기</div>
         </div>
       </div>
-      <div class="rate-note">적용률=FORMATTED_SQL 값 있음 / TUNED_TEST PASS 계열</div>
+      <div class="rate-note">적용률=FORMATTED_SQL 값 있음 / STATUS_TUNING PASS 계열</div>
       <div class="status-grid">
         <div class="status-box">
           <div class="status-box-label">✅ 적용</div>

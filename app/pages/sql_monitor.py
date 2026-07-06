@@ -12,8 +12,9 @@ _COLS_TABLE = [
     "SQL_ID",
     "SPACE_NM",
     "TAG_KIND",
-    "STATUS",
-    "TUNED_TEST",
+    "STATUS_CONVERSION",
+    "STATUS_TUNING",
+    "PRIORITY",
     "SQL_LENGTH",
     "MAP_TYPE",
     "EFFECTIVE_FR_SQL_LEN",
@@ -79,8 +80,9 @@ def _prepare_df(rows: list[dict]) -> pd.DataFrame:
         "SQL_ID",
         "SPACE_NM",
         "TAG_KIND",
-        "STATUS",
-        "TUNED_TEST",
+        "STATUS_CONVERSION",
+        "STATUS_TUNING",
+        "PRIORITY",
         "SQL_LENGTH",
         "MAP_TYPE",
         "TARGET_TABLE",
@@ -238,9 +240,9 @@ def render():
 
         c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
-            sel_status = st.selectbox("STATUS", _options(df_all, "STATUS"))
+            sel_status = st.selectbox("STATUS_CONVERSION", _options(df_all, "STATUS_CONVERSION"))
         with c2:
-            sel_tuned = st.selectbox("TUNED_TEST", _options(df_all, "TUNED_TEST"))
+            sel_tuned = st.selectbox("STATUS_TUNING", _options(df_all, "STATUS_TUNING"))
         with c3:
             sel_map_type = st.selectbox("MAP_TYPE / map_kind", _options(df_all, "MAP_TYPE"))
         with c4:
@@ -282,9 +284,9 @@ def render():
     df = df[_contains(df["BLOCK_RAG_CONTENT"], block_rag_query)]
 
     if sel_status != ALL:
-        df = df[df["STATUS"] == sel_status]
+        df = df[df["STATUS_CONVERSION"] == sel_status]
     if sel_tuned != ALL:
-        df = df[df["TUNED_TEST"] == sel_tuned]
+        df = df[df["STATUS_TUNING"] == sel_tuned]
     if sel_map_type != ALL:
         df = df[df["MAP_TYPE"] == sel_map_type]
     if sel_sql_length != ALL:
@@ -330,7 +332,7 @@ def render():
 
     row_ids = grid_df["ROW_ID"].tolist()
     labels = [
-        f"{r['SPACE_NM']} / {r['SQL_ID']} | STATUS={r['STATUS'] or 'NULL'} | MAP_TYPE={r['MAP_TYPE'] or '-'} | LEN={r['EFFECTIVE_FR_SQL_LEN']}"
+        f"{r['SPACE_NM']} / {r['SQL_ID']} | STATUS_CONVERSION={r['STATUS_CONVERSION'] or 'NULL'} | MAP_TYPE={r['MAP_TYPE'] or '-'} | LEN={r['EFFECTIVE_FR_SQL_LEN']}"
         for _, r in grid_df.iterrows()
     ]
     idx = st.selectbox("목록 선택", range(len(labels)), format_func=lambda i: labels[i])
@@ -344,9 +346,9 @@ def render():
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        st.metric("STATUS", detail.get("STATUS") or "-")
+        st.metric("STATUS_CONVERSION", detail.get("STATUS_CONVERSION") or "-")
     with m2:
-        st.metric("TUNED_TEST", detail.get("TUNED_TEST") or "-")
+        st.metric("STATUS_TUNING", detail.get("STATUS_TUNING") or "-")
     with m3:
         st.metric("SQL_LENGTH", detail.get("SQL_LENGTH") or row.get("SQL_LENGTH") or "-")
     with m4:
