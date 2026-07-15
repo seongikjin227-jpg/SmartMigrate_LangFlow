@@ -108,6 +108,20 @@ def _get_available_columns(table: str) -> set[str]:
     return columns
 
 
+def _next_top_priority(table: str, available_columns: set[str]) -> int | None:
+    if "PRIORITY" not in available_columns:
+        return None
+    q = f"SELECT NVL(MIN(PRIORITY), 0) - 1 FROM {table}"
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(q)
+            row = cur.fetchone()
+            return int(row[0] or 0)
+    except Exception:
+        return 0
+
+
 def _optional_column_expr(column_name: str, available_columns: set[str], data_type: str = "VARCHAR2(4000)") -> str:
     column = column_name.upper()
     if column in available_columns:
@@ -569,6 +583,7 @@ def reset_mig_job_for_rerun(map_id: int) -> bool:
     """Reset a migration job so it can be run again."""
     available_columns = _get_available_columns(MIG_TABLE)
     user_edit_column = "USER_EDITED" if "USER_EDITED" in available_columns else None
+    next_priority = _next_top_priority(MIG_TABLE, available_columns)
     mig_sql_reset = (
         f"MIG_SQL = CASE WHEN UPPER(TRIM(NVL({user_edit_column}, 'N'))) = 'Y' THEN MIG_SQL ELSE NULL END,"
         if user_edit_column
@@ -579,12 +594,16 @@ def reset_mig_job_for_rerun(map_id: int) -> bool:
         if user_edit_column
         else "VERIFY_SQL = NULL,"
     )
+    batch_cnt_reset = "BATCH_CNT = 0," if "BATCH_CNT" in available_columns else ""
+    priority_reset = "PRIORITY = :2," if next_priority is not None else ""
     """Migration 작업을 재실행 가능 상태로 초기화합니다."""
     q = f"""
         UPDATE {MIG_TABLE}
         SET USE_YN = 'Y',
             STATUS = NULL,
             RETRY_COUNT = 0,
+            {batch_cnt_reset}
+            {priority_reset}
             {mig_sql_reset}
             {verify_sql_reset}
             UPD_TS = CURRENT_TIMESTAMP
@@ -593,7 +612,8 @@ def reset_mig_job_for_rerun(map_id: int) -> bool:
     try:
         with get_connection() as conn:
             cur = conn.cursor()
-            cur.execute(q, (int(map_id),))
+            params = (int(map_id), next_priority) if next_priority is not None else (int(map_id),)
+            cur.execute(q, params)
             rowcount = cur.rowcount
             conn.commit()
             return rowcount > 0
@@ -619,24 +639,32 @@ def find_sql_job_spaces(sql_id: str) -> list[str]:
 
 def reset_sql_conversion_job(sql_id: str, space_nm: str | None = None) -> int:
     """SQL 변환 작업을 URGENT 상태로 재설정합니다. 업데이트된 행 수를 반환합니다."""
+    available_columns = _get_available_columns(SQL_TABLE)
     status_column = _SQL_CONVERSION_STATUS_COLUMN
+    next_priority = _next_top_priority(SQL_TABLE, available_columns)
+    set_clauses = [f"{status_column} = 'URGENT'", "UPD_TS = CURRENT_TIMESTAMP"]
+    params: list = []
+    if "BATCH_CNT" in available_columns:
+        set_clauses.insert(1, "BATCH_CNT = 0")
+    if next_priority is not None:
+        params.append(next_priority)
+        set_clauses.insert(1, f"PRIORITY = :{len(params)}")
+    set_clause = ",\n                ".join(set_clauses)
     if space_nm:
         q = f"""
             UPDATE {SQL_TABLE}
-            SET {status_column} = 'URGENT',
-                UPD_TS = CURRENT_TIMESTAMP
-            WHERE TO_CHAR(SQL_ID) = :1
-              AND TO_CHAR(SPACE_NM) = :2
+            SET {set_clause}
+            WHERE TO_CHAR(SQL_ID) = :{len(params) + 1}
+              AND TO_CHAR(SPACE_NM) = :{len(params) + 2}
         """
-        params = (sql_id, space_nm)
+        params.extend([sql_id, space_nm])
     else:
         q = f"""
             UPDATE {SQL_TABLE}
-            SET {status_column} = 'URGENT',
-                UPD_TS = CURRENT_TIMESTAMP
-            WHERE TO_CHAR(SQL_ID) = :1
+            SET {set_clause}
+            WHERE TO_CHAR(SQL_ID) = :{len(params) + 1}
         """
-        params = (sql_id,)
+        params.append(sql_id)
     try:
         with get_connection() as conn:
             cur = conn.cursor()
@@ -650,24 +678,32 @@ def reset_sql_conversion_job(sql_id: str, space_nm: str | None = None) -> int:
 
 def reset_sql_tuning_job(sql_id: str, space_nm: str | None = None) -> int:
     """SQL 튜닝 작업을 URGENT 상태로 재설정합니다. 업데이트된 행 수를 반환합니다."""
+    available_columns = _get_available_columns(SQL_TABLE)
     tuned_status_column = _SQL_TUNING_STATUS_COLUMN
+    next_priority = _next_top_priority(SQL_TABLE, available_columns)
+    set_clauses = [f"{tuned_status_column} = 'URGENT'", "UPD_TS = CURRENT_TIMESTAMP"]
+    params: list = []
+    if "BATCH_CNT" in available_columns:
+        set_clauses.insert(1, "BATCH_CNT = 0")
+    if next_priority is not None:
+        params.append(next_priority)
+        set_clauses.insert(1, f"PRIORITY = :{len(params)}")
+    set_clause = ",\n                ".join(set_clauses)
     if space_nm:
         q = f"""
             UPDATE {SQL_TABLE}
-            SET {tuned_status_column} = 'URGENT',
-                UPD_TS = CURRENT_TIMESTAMP
-            WHERE TO_CHAR(SQL_ID) = :1
-              AND TO_CHAR(SPACE_NM) = :2
+            SET {set_clause}
+            WHERE TO_CHAR(SQL_ID) = :{len(params) + 1}
+              AND TO_CHAR(SPACE_NM) = :{len(params) + 2}
         """
-        params = (sql_id, space_nm)
+        params.extend([sql_id, space_nm])
     else:
         q = f"""
             UPDATE {SQL_TABLE}
-            SET {tuned_status_column} = 'URGENT',
-                UPD_TS = CURRENT_TIMESTAMP
-            WHERE TO_CHAR(SQL_ID) = :1
+            SET {set_clause}
+            WHERE TO_CHAR(SQL_ID) = :{len(params) + 1}
         """
-        params = (sql_id,)
+        params.append(sql_id)
     try:
         with get_connection() as conn:
             cur = conn.cursor()

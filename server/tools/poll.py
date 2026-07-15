@@ -2,24 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
 from typing import Callable
-
-_TARGET_JOB_FILE = Path(__file__).resolve().parent.parent.parent / "runtime" / "target_job.json"
-
-
-def _pop_target_job() -> dict | None:
-    """챗봇 재실행 요청 대상 job을 읽고 파일을 즉시 삭제합니다 (1회성)."""
-    if not _TARGET_JOB_FILE.exists():
-        return None
-    try:
-        data = json.loads(_TARGET_JOB_FILE.read_text(encoding="utf-8"))
-        _TARGET_JOB_FILE.unlink(missing_ok=True)
-        return data
-    except Exception:
-        return None
 
 from langchain_core.tools import tool
 
@@ -101,9 +85,6 @@ def build_poll_jobs_tool(
         logger = callbacks.get("logger")
         run_mig, run_sql, run_tuning, run_fmt = _agent_flags()
 
-        # 챗봇 재실행 요청이 있으면 해당 job만 처리 (1회성)
-        target = _pop_target_job()
-
         mig_jobs, sql_jobs, tuning_jobs, formatting_jobs = [], [], [], []
         try:
             if run_mig:
@@ -122,49 +103,14 @@ def build_poll_jobs_tool(
             if logger:
                 logger.error(f"[poll_jobs] SQL/Tuning/Formatting 조회 오류: {exc}")
 
-        # target_job 필터: 요청된 단일 job만 이번 사이클에 등록
-        if target:
-            t = target.get("type", "")
-            if t == "mig":
-                mid = int(target.get("map_id", -1))
-                mig_jobs      = [j for j in mig_jobs if j.map_id == mid]
-                sql_jobs      = []
-                tuning_jobs   = []
-                formatting_jobs = []
-            elif t == "sql_conv":
-                sid = str(target.get("sql_id", ""))
-                space_nm = target.get("space_nm")
-                sql_jobs      = [
-                    j for j in sql_jobs
-                    if str(j.sql_id) == sid
-                    and (not space_nm or str(getattr(j, "space_nm", "")) == str(space_nm))
-                ]
-                mig_jobs      = []
-                tuning_jobs   = []
-                formatting_jobs = []
-            elif t == "sql_tune":
-                sid = str(target.get("sql_id", ""))
-                space_nm = target.get("space_nm")
-                tuning_jobs   = [
-                    j for j in tuning_jobs
-                    if str(j.sql_id) == sid
-                    and (not space_nm or str(getattr(j, "space_nm", "")) == str(space_nm))
-                ]
-                mig_jobs      = []
-                sql_jobs      = []
-                formatting_jobs = []
-            if logger:
-                logger.info(f"[poll_jobs] 챗봇 재실행 요청 → type={t}, target={target}")
-
         raw_mig_total = len(mig_jobs)
         raw_sql_total = len(sql_jobs)
         raw_tuning_total = len(tuning_jobs)
         raw_formatting_total = len(formatting_jobs)
 
-        if not target:
-            mig_jobs, sql_jobs, tuning_jobs, formatting_jobs = priority_gate_jobs(
-                mig_jobs, sql_jobs, tuning_jobs, formatting_jobs
-            )
+        mig_jobs, sql_jobs, tuning_jobs, formatting_jobs = priority_gate_jobs(
+            mig_jobs, sql_jobs, tuning_jobs, formatting_jobs
+        )
 
         mig_registry.clear()
         sql_registry.clear()

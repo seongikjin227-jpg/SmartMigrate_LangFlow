@@ -31,18 +31,16 @@ from server.tools.context import is_stop_requested, request_stop
 _COMMAND_FILE = Path(__file__).resolve().parent.parent.parent.parent / "runtime" / "chat_command.json"
 
 
-def _read_chat_command() -> tuple[str | None, bool]:
-    """채팅에서 전달된 수퍼바이저 명령을 읽고 파일을 삭제한다 (1회성).
-    Returns: (command, one_shot)
-    """
+def _read_chat_command() -> str | None:
+    """채팅에서 전달된 수퍼바이저 명령을 읽고 파일을 삭제한다."""
     if not _COMMAND_FILE.exists():
-        return None, False
+        return None
     try:
         data = json.loads(_COMMAND_FILE.read_text(encoding="utf-8"))
         _COMMAND_FILE.unlink(missing_ok=True)
-        return data.get("command"), data.get("one_shot", False)
+        return data.get("command")
     except Exception:
-        return None, False
+        return None
 
 logger = logging.getLogger("migration_agent")
 
@@ -115,16 +113,10 @@ class SupervisorAgent:
                     f"사이클 {cycle}을 시작합니다. "
                     "poll_jobs()를 호출하여 현황을 파악하고 작업을 처리하세요."
                 )
-                chat_command, one_shot = _read_chat_command()
+                chat_command = _read_chat_command()
                 if chat_command:
                     human_content += f"\n\n[사용자 요청] {chat_command}\n위 요청을 이번 사이클에 반영하세요."
-                    if one_shot:
-                        human_content += (
-                            "\n이 요청은 one_shot=true 입니다. poll_jobs() 결과에서 요청 대상만 실행하고, "
-                            "다른 작업 유형은 실행하지 마세요. 작업 후 flush_cycle_metrics()를 호출한 뒤 "
-                            "request_wait() 없이 최종 응답하고 사이클을 끝내세요."
-                        )
-                    logger.info(f"[Supervisor] 채팅 명령 수신 (one_shot={one_shot}): {chat_command}")
+                    logger.info(f"[Supervisor] 채팅 명령 수신: {chat_command}")
 
                 initial_state: SupervisorState = {
                     "messages": [
@@ -150,10 +142,6 @@ class SupervisorAgent:
                 finally:
                     # LLM이 flush_cycle_metrics 호출을 누락한 경우를 대비한 안전망
                     supervisor_tools.finish_cycle_metrics(logger)
-
-                if one_shot:
-                    logger.info("[Supervisor] one_shot 사이클 완료. 자동 종료합니다.")
-                    break
 
         finally:
             logger.info("[Supervisor] 모든 에이전트가 종료되었습니다.")

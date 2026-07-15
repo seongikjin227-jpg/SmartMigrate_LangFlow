@@ -26,11 +26,9 @@ from utils.db import (
     get_mig_failure_analysis_rows,
     get_sql_conversion_failure_analysis_rows,
     get_sql_tuning_failure_analysis_rows,
-    poll_mig_job_result,
-    poll_sql_job_result,
 )
 from utils.env_manager import read_env
-from utils.agent_control import get_status as _agent_status, start as _start_supervisor, stop as _stop_supervisor
+from utils.agent_control import get_status as _agent_status, start as _start_supervisor
 
 _ROOT      = Path(__file__).resolve().parent.parent.parent
 load_dotenv(_ROOT / ".env")
@@ -53,55 +51,12 @@ def _wake_supervisor() -> None:
         pass
 
 
-_TARGET_JOB_FILE = _ROOT / "runtime" / "target_job.json"
-_COMMAND_FILE = _ROOT / "runtime" / "chat_command.json"
-
-
-def _write_target_job(data: dict) -> None:
-    """Supervisor의 다음 사이클에서 이 job만 처리하도록 지시합니다."""
-    try:
-        _TARGET_JOB_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _TARGET_JOB_FILE.write_text(
-            json.dumps(data, ensure_ascii=False), encoding="utf-8"
-        )
-    except Exception:
-        pass
-
-def _write_one_shot_command(command: str) -> None:
-    """Ask the background Supervisor to run exactly one requested cycle."""
-    try:
-        _COMMAND_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _COMMAND_FILE.write_text(
-            json.dumps({"command": command, "one_shot": True}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
-
-
-def _target_qualifier(sql_id: str, space_nm: str | None = None) -> str:
-    if space_nm:
-        return f"SQL_ID={sql_id}, SPACE_NM={space_nm}"
-    return f"SQL_ID={sql_id}"
-
-
 def _ensure_supervisor_running() -> None:
     """Supervisor가 꺼져 있으면 자동으로 시작하고, 실행 중이면 즉시 깨웁니다."""
     if not _agent_status()["running"]:
         _start_supervisor()
     else:
         _wake_supervisor()
-
-
-# ── Supervisor Function-Calling 도구 정의 ─────────────────────────────────────
-def _stop_supervisor_for_one_shot() -> None:
-    """Interrupt the current Supervisor cycle before a chat-requested one-shot run."""
-    if _agent_status()["running"]:
-        _stop_supervisor()
-
-
-def _start_supervisor_for_one_shot() -> None:
-    _start_supervisor()
 
 
 def _num(value, default: int = 0) -> int:
@@ -429,10 +384,9 @@ _SUPERVISOR_TOOLS = [
         "function": {
             "name": "rerun_migration",
             "description": (
-                "Migration 작업을 즉시 재실행합니다. "
-                "NEXT_MIG_INFO에서 USE_YN='Y', STATUS=NULL, MIG_SQL=NULL, RETRY_COUNT=0으로 초기화하고 "
-                "Supervisor를 즉시 깨워 처리하게 합니다. "
-                "사용자가 재실행을 요청할 때 사용하세요."
+                "사용자가 명시적으로 승인한 뒤 Migration 작업을 재실행 대기 상태로 조정합니다. "
+                "NEXT_MIG_INFO에서 USE_YN='Y', STATUS=NULL, RETRY_COUNT=0, BATCH_CNT=0, PRIORITY 최상위로 조정하고 "
+                "Supervisor를 깨워 계속 실행 중인 루프가 처리하게 합니다."
             ),
             "parameters": {
                 "type": "object",
@@ -448,9 +402,9 @@ _SUPERVISOR_TOOLS = [
         "function": {
             "name": "rerun_sql_conversion",
             "description": (
-                "SQL 변환 작업을 즉시 재실행합니다. "
-                "NEXT_SQL_INFO.STATUS_CONVERSION을 'URGENT'로 설정하고 Supervisor를 즉시 깨웁니다. "
-                "사용자가 SQL 변환 재실행을 요청할 때 사용하세요."
+                "사용자가 명시적으로 승인한 뒤 SQL 변환 작업을 재실행 대기 상태로 조정합니다. "
+                "NEXT_SQL_INFO.STATUS_CONVERSION='URGENT', BATCH_CNT=0, PRIORITY 최상위로 조정하고 "
+                "Supervisor를 깨워 계속 실행 중인 루프가 처리하게 합니다."
             ),
             "parameters": {
                 "type": "object",
@@ -467,9 +421,9 @@ _SUPERVISOR_TOOLS = [
         "function": {
             "name": "rerun_sql_tuning",
             "description": (
-                "SQL 튜닝 작업을 즉시 재실행합니다. "
-                "NEXT_SQL_INFO.STATUS_TUNING을 'URGENT'로 설정하고 Supervisor를 즉시 깨웁니다. "
-                "사용자가 SQL 튜닝 재실행을 요청할 때 사용하세요."
+                "사용자가 명시적으로 승인한 뒤 SQL 튜닝 작업을 재실행 대기 상태로 조정합니다. "
+                "NEXT_SQL_INFO.STATUS_TUNING='URGENT', BATCH_CNT=0, PRIORITY 최상위로 조정하고 "
+                "Supervisor를 깨워 계속 실행 중인 루프가 처리하게 합니다."
             ),
             "parameters": {
                 "type": "object",
@@ -562,21 +516,17 @@ def _handle_supervisor_tool(name: str, args: dict) -> str:
 
         if name == "rerun_migration":
             map_id = int(args["map_id"])
-            _stop_supervisor_for_one_shot()
             ok = reset_mig_job_for_rerun(map_id)
             if not ok:
                 return json.dumps({"success": False, "map_id": map_id,
                                    "reason": "DB에서 해당 MAP_ID를 찾을 수 없습니다."}, ensure_ascii=False)
-            _write_target_job({"type": "mig", "map_id": map_id})
-            _write_one_shot_command(
-                f"One-shot request: run only Data Migration MAP_ID={map_id}. "
-                "Call poll_jobs() first, then run_data_migration for that map_id only. "
-                "Do not run SQL conversion, SQL tuning, or SQL formatting. "
-                "After the requested job, call flush_cycle_metrics() and finish."
-            )
-            _start_supervisor_for_one_shot()
-            result = poll_mig_job_result(map_id, timeout_sec=300)
-            return json.dumps(result, ensure_ascii=False, default=str)
+            _ensure_supervisor_running()
+            return json.dumps({
+                "success": True,
+                "map_id": map_id,
+                "queued": True,
+                "message": "DB Migration 작업을 재실행 대기 상태로 초기화하고 최상위 우선순위로 조정했습니다. Supervisor는 종료하지 않고 다음 poll에서 처리합니다.",
+            }, ensure_ascii=False, default=str)
 
         if name == "rerun_sql_conversion":
             sql_id   = args["sql_id"]
@@ -596,21 +546,19 @@ def _handle_supervisor_tool(name: str, args: dict) -> str:
                     "reason": "같은 SQL_ID가 여러 SPACE_NM에 존재합니다. SPACE_NM을 지정해야 합니다.",
                     "space_nm_candidates": spaces,
                 }, ensure_ascii=False)
-            _stop_supervisor_for_one_shot()
             cnt = reset_sql_conversion_job(sql_id, space_nm)
             if cnt == 0:
                 return json.dumps({"success": False, "sql_id": sql_id,
                                    "reason": "DB에서 해당 SQL_ID를 찾을 수 없습니다."}, ensure_ascii=False)
-            _write_target_job({"type": "sql_conv", "sql_id": sql_id, "space_nm": space_nm})
-            _write_one_shot_command(
-                f"One-shot request: run only SQL Conversion for {_target_qualifier(sql_id, space_nm)}. "
-                "Call poll_jobs() first, then run_sql_conversion for the row_id returned in sql_jobs only. "
-                "Do not run Data Migration, SQL tuning, or SQL formatting. "
-                "After the requested job, call flush_cycle_metrics() and finish."
-            )
-            _start_supervisor_for_one_shot()
-            result = poll_sql_job_result(sql_id, field="STATUS_CONVERSION", space_nm=space_nm, timeout_sec=300)
-            return json.dumps(result, ensure_ascii=False, default=str)
+            _ensure_supervisor_running()
+            return json.dumps({
+                "success": True,
+                "sql_id": sql_id,
+                "space_nm": space_nm,
+                "updated_rows": cnt,
+                "queued": True,
+                "message": "SQL Conversion 작업을 URGENT 상태와 최상위 우선순위로 조정했습니다. Supervisor는 종료하지 않고 다음 poll에서 처리합니다.",
+            }, ensure_ascii=False, default=str)
 
         if name == "rerun_sql_tuning":
             sql_id   = args["sql_id"]
@@ -630,21 +578,19 @@ def _handle_supervisor_tool(name: str, args: dict) -> str:
                     "reason": "같은 SQL_ID가 여러 SPACE_NM에 존재합니다. SPACE_NM을 지정해야 합니다.",
                     "space_nm_candidates": spaces,
                 }, ensure_ascii=False)
-            _stop_supervisor_for_one_shot()
             cnt = reset_sql_tuning_job(sql_id, space_nm)
             if cnt == 0:
                 return json.dumps({"success": False, "sql_id": sql_id,
                                    "reason": "DB에서 해당 SQL_ID를 찾을 수 없습니다."}, ensure_ascii=False)
-            _write_target_job({"type": "sql_tune", "sql_id": sql_id, "space_nm": space_nm})
-            _write_one_shot_command(
-                f"One-shot request: run only SQL Tuning for {_target_qualifier(sql_id, space_nm)}. "
-                "Call poll_jobs() first, then run_sql_tuning for the row_id returned in tuning_jobs only. "
-                "Do not run Data Migration, SQL conversion, or SQL formatting. "
-                "After the requested job, call flush_cycle_metrics() and finish."
-            )
-            _start_supervisor_for_one_shot()
-            result = poll_sql_job_result(sql_id, field="STATUS_TUNING", space_nm=space_nm, timeout_sec=300)
-            return json.dumps(result, ensure_ascii=False, default=str)
+            _ensure_supervisor_running()
+            return json.dumps({
+                "success": True,
+                "sql_id": sql_id,
+                "space_nm": space_nm,
+                "updated_rows": cnt,
+                "queued": True,
+                "message": "SQL Tuning 작업을 URGENT 상태와 최상위 우선순위로 조정했습니다. Supervisor는 종료하지 않고 다음 poll에서 처리합니다.",
+            }, ensure_ascii=False, default=str)
 
         return json.dumps({"error": f"알 수 없는 도구: {name}"})
 
@@ -831,9 +777,12 @@ def _system_prompt(supervisor_mode: bool = False) -> str:
             "1. 사용자가 특정 map_id의 실패 원인을 물어보면 query_mig_failure_log 도구를 호출하여",
             "   로그를 조회한 뒤 원인을 한국어로 분석·요약합니다.",
             "2. 사용자가 sql_id의 실패 원인을 물어보면 query_sql_failure_log 도구를 호출합니다.",
-            "3. 사용자가 재실행을 요청하면 즉시 해당 rerun 도구를 호출하여 DB 상태를 변경하고",
-            "   Supervisor를 깨웁니다. 사용자에게 확인 메시지를 묻지 않고 바로 실행합니다.",
-            "4. 정보 조회와 재실행을 조합할 수 있습니다 (예: 실패 원인 확인 후 재실행).",
+            "3. 재실행 요청은 DB 상태를 변경합니다. 사용자가 처음 재실행을 요청하면 도구를 호출하지 말고",
+            "   'DB 상태를 재실행 대기 상태로 변경하고 우선순위를 최상위로 올립니다. 진행할까요?'처럼 먼저 확인하세요.",
+            "4. 사용자가 직전 확인에 긍정적으로 답한 경우에만 해당 rerun 도구를 호출합니다.",
+            "5. rerun 도구는 단독 실행 명령이 아니라 우선순위 조정만 수행합니다. 작업 완료까지 기다리지 말고",
+            "   supervisor가 계속 실행 중인 루프에서 다음 poll 때 처리한다고 안내하세요.",
+            "6. 정보 조회와 재실행 확인을 조합할 수 있습니다 (예: 실패 원인 확인 후 재실행 여부 확인).",
             "",
             "도구 선택 기준:",
             "- '왜 실패했어?', '실패 원인', '로그 보여줘' → query_mig_failure_log 또는 query_sql_failure_log",
@@ -933,6 +882,34 @@ def _fetch_sql_context(sql_pairs: list[tuple[str, str | None]]) -> str:
     return "\n".join(lines)
 
 
+_MUTATING_TOOLS = {"rerun_migration", "rerun_sql_conversion", "rerun_sql_tuning"}
+
+
+def _latest_user_message(chat_messages: list[dict]) -> str:
+    return next((str(m.get("content") or "") for m in reversed(chat_messages) if m.get("role") == "user"), "")
+
+
+def _is_affirmative_confirmation(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+    if any(token in normalized for token in ("아니", "ㄴㄴ", "취소", "하지마", "no", "cancel")):
+        return False
+    return any(
+        token in normalized
+        for token in ("응", "ㅇㅇ", "예", "네", "그래", "좋아", "진행", "실행", "해줘", "yes", "ok", "okay", "go")
+    )
+
+
+def _has_pending_db_change_confirmation(chat_messages: list[dict]) -> bool:
+    for msg in reversed(chat_messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = str(msg.get("content") or "")
+        return "DB" in content and "변경" in content and "진행" in content and "?" in content
+    return False
+
+
 def _call_llm_supervisor(chat_messages: list[dict]) -> str:
     """Supervisor 모드 전용 LLM 호출: function calling 루프로 도구를 자율 실행합니다."""
     api_key  = os.getenv("OPEN_API_KEY") or os.getenv("LLM_API_KEY", "")
@@ -967,7 +944,25 @@ def _call_llm_supervisor(chat_messages: list[dict]) -> str:
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
-            tool_result = _handle_supervisor_tool(tc.function.name, args)
+            if (
+                tc.function.name in _MUTATING_TOOLS
+                and not (
+                    _has_pending_db_change_confirmation(chat_messages)
+                    and _is_affirmative_confirmation(_latest_user_message(chat_messages))
+                )
+            ):
+                tool_result = json.dumps(
+                    {
+                        "confirmation_required": True,
+                        "message": (
+                            "이 요청은 DB 상태를 재실행 대기 상태로 변경하고 우선순위를 최상위로 올립니다. "
+                            "진행할까요?"
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            else:
+                tool_result = _handle_supervisor_tool(tc.function.name, args)
             messages.append({
                 "role":         "tool",
                 "tool_call_id": tc.id,
