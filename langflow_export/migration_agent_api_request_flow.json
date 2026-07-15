@@ -1,6 +1,6 @@
 {
   "name": "Migration Agent API Request Pipeline",
-  "description": "Langflow API Request based pipeline for a secured migration-agent deployment.",
+  "description": "Langflow API Request based pipeline for a secured migration-agent deployment. Edges are intentionally omitted for broad Langflow import compatibility.",
   "tags": [
     "migration",
     "agent",
@@ -320,53 +320,7 @@
         }
       }
     ],
-    "edges": [
-      {
-        "id": "edge-01-02",
-        "source": "ApiHealth-01",
-        "target": "PollMigration-02"
-      },
-      {
-        "id": "edge-02-03",
-        "source": "PollMigration-02",
-        "target": "RunMigration-03"
-      },
-      {
-        "id": "edge-03-04",
-        "source": "RunMigration-03",
-        "target": "PollConversion-04"
-      },
-      {
-        "id": "edge-04-05",
-        "source": "PollConversion-04",
-        "target": "RunConversion-05"
-      },
-      {
-        "id": "edge-05-06",
-        "source": "RunConversion-05",
-        "target": "PollTuning-06"
-      },
-      {
-        "id": "edge-06-07",
-        "source": "PollTuning-06",
-        "target": "RunTuning-07"
-      },
-      {
-        "id": "edge-07-08",
-        "source": "RunTuning-07",
-        "target": "PollFormatting-08"
-      },
-      {
-        "id": "edge-08-09",
-        "source": "PollFormatting-08",
-        "target": "RunFormatting-09"
-      },
-      {
-        "id": "edge-09-10",
-        "source": "RunFormatting-09",
-        "target": "AgentStatus-10"
-      }
-    ],
+    "edges": [],
     "viewport": {
       "x": -100,
       "y": 0,

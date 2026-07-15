@@ -138,4 +138,21 @@ GET  /agent/status
 langflow_export/migration_agent_api_request_flow.json
 ```
 
-Langflow 버전에 따라 API Request 컴포넌트 내부 필드명이 달라질 수 있습니다. import 후 각 노드의 URL, Method, Headers를 화면에서 한 번 확인하세요.
+Langflow 버전에 따라 API Request 컴포넌트 내부 필드명과 edge handle schema가 달라질 수 있습니다. import 안정성을 위해 이 JSON은 노드만 배치하고 연결선은 생략합니다.
+
+업로드 후 화면에서 아래 순서대로 선을 직접 연결하세요.
+
+```text
+01 API Health
+  -> 02 Poll DB Migration
+  -> 03 Run DB Migration
+  -> 04 Poll SQL Conversion
+  -> 05 Run SQL Conversion
+  -> 06 Poll SQL Tuning
+  -> 07 Run SQL Tuning
+  -> 08 Poll SQL Formatting
+  -> 09 Run SQL Formatting
+  -> 10 Agent Status
+```
+
+각 노드의 URL, Method, Headers도 화면에서 한 번 확인하세요.
