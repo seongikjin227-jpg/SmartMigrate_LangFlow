@@ -2,6 +2,8 @@
 
 이 폴더는 현재 프로젝트를 Langflow에서 호출할 수 있게 만든 export 패키지입니다.
 
+회사 보안망 운영에서는 Custom Component 방식보다 `README_LANGFLOW_API_REQUEST.md`의 API Request 방식을 우선 권장합니다.
+
 ## 포함 파일
 
 - `custom_components/migration_agent/migration_agent_controller.py`
@@ -14,6 +16,9 @@
 - `migration_agent_visual_pipeline_flow.json`
   - 다른 PC 배포를 염두에 둔 단계형 Langflow 플로우입니다.
   - `Load -> Poll -> Run` 노드들이 DB migration, SQL conversion, SQL tuning, SQL formatting 순서로 배치됩니다.
+- `migration_agent_api_request_flow.json`
+  - 회사 보안망 운영에 더 적합한 API Request 기반 플로우 초안입니다.
+  - Langflow는 HTTP endpoint만 호출하고, Python agent 코드는 별도 Agent API 서버가 실행합니다.
 
 ## 권장 사용법
 
