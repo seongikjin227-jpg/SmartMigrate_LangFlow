@@ -68,3 +68,72 @@ source_schema=
 target_schema=
 ```
 
+
+## DB 연결 방식
+
+컴포넌트는 LangChain `SQLDatabase`를 사용한다.
+
+```python
+connection_string = "oracle+oracledb://user:pass@host:port/service"
+db = SQLDatabase.from_uri(connection_string)
+```
+
+동일 DB 입력값은 cache key로 재사용한다.
+
+```text
+cache_key = host|port|service_name|username
+```
+
+SELECT 계열 조회는 `db.run(query, include_columns=True)` 패턴을 사용한다. UPDATE/INSERT/TRUNCATE처럼 commit과 rowcount가 필요한 작업은 같은 cached `SQLDatabase`의 SQLAlchemy engine transaction을 사용한다.
+
+## 런타임 패키지 설치 옵션
+
+Langflow 런타임에 필요한 패키지가 없으면 DB 연결 전에 오류가 난다.
+필요 패키지:
+
+```text
+langchain-community
+SQLAlchemy
+oracledb
+```
+
+사내망에서 Langflow 런타임이 패키지를 직접 설치해야 하는 경우에만 `Auto Install Missing Packages=true`로 켠다.
+
+```text
+auto_install_packages=true
+pip_trusted_host=사내 PyPI/proxy host 또는 URL
+```
+
+주의: `pip --trusted-host`는 URL 전체가 아니라 host 값을 기대한다. 컴포넌트는 URL을 입력해도 hostname만 추출해서 사용한다.
+
+내부 설치 패턴:
+
+```python
+subprocess.check_call([
+    sys.executable,
+    "-m",
+    "pip",
+    "install",
+    package,
+    "--trusted-host",
+    trusted_host,
+])
+```
+
+## 기존 소스 코드의 DB 접속 방식
+
+기존 `0609_final-main` 소스는 `oracledb.connect()` 직접 연결을 사용했다.
+
+```python
+dsn = f"{DB_HOST}:{DB_PORT}/{DB_SID}"
+connection = oracledb.connect(user=DB_USER, password=DB_PASS, dsn=dsn)
+```
+
+Langflow Custom Component 버전은 회사 표준에 맞춰 SQLAlchemy URL을 만들고 `SQLDatabase.from_uri()`로 연결한다.
+
+```python
+connection_string = "oracle+oracledb://user:pass@host:port/service"
+db = SQLDatabase.from_uri(connection_string)
+```
+
+조회는 `db.run(query, include_columns=True)`를 사용하고, 쓰기/커밋이 필요한 작업은 같은 cached `SQLDatabase`의 SQLAlchemy engine을 재사용한다.

@@ -2,8 +2,12 @@
 
 import json
 import re
+import subprocess
+import sys
 import time
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
+from urllib.parse import quote_plus, urlparse
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
@@ -16,6 +20,8 @@ class MigrationCommandTool(Component):
     description = "Controls SmartMigration DB migration jobs through Oracle metadata tables."
     name = "MigrationCommandTool"
     icon = "Database"
+
+    _db_cache: dict[str, Any] = {}
 
     inputs = [
         MessageTextInput(
@@ -85,6 +91,19 @@ class MigrationCommandTool(Component):
             required=False,
             info="If false, run_migration_job only saves generated SQL and does not execute it unless USER_EDITED=Y.",
         ),
+        BoolInput(
+            name="auto_install_packages",
+            display_name="Auto Install Missing Packages",
+            value=False,
+            required=False,
+            info="If true, installs missing runtime packages with pip before DB connection. Keep false unless Langflow runtime lacks dependencies.",
+        ),
+        StrInput(
+            name="pip_trusted_host",
+            display_name="Pip Trusted Host",
+            required=False,
+            info="Optional trusted host for internal PyPI/proxy. Hostname is extracted if a full URL is entered.",
+        ),
     ]
 
     outputs = [
@@ -128,22 +147,98 @@ class MigrationCommandTool(Component):
             raise ValueError("command_json is required")
         return json.loads(text)
 
-    def _connect(self):
-        import oracledb
-
+    def _connection_string(self) -> str:
         host = str(self.db_host or "").strip()
         port = int(self.db_port or 1521)
         service_name = str(self.db_service_name or "").strip()
         username = str(self.db_username or "").strip()
+        password = str(self.db_password or "")
         if not host:
             raise ValueError("DB Host is required")
         if not service_name:
             raise ValueError("Service Name is required")
         if not username:
             raise ValueError("Username is required")
+        return f"oracle+oracledb://{quote_plus(username)}:{quote_plus(password)}@{host}:{port}/{service_name}"
 
-        dsn = f"{host}:{port}/{service_name}"
-        return oracledb.connect(user=username, password=self.db_password, dsn=dsn)
+    def _cache_key(self) -> str:
+        return "|".join(
+            [
+                str(self.db_host or "").strip(),
+                str(self.db_port or 1521),
+                str(self.db_service_name or "").strip(),
+                str(self.db_username or "").strip(),
+            ]
+        )
+
+    def _get_db(self):
+        self._ensure_runtime_dependencies()
+        from langchain_community.utilities import SQLDatabase
+
+        cache_key = self._cache_key()
+        if cache_key not in self._db_cache:
+            self._db_cache[cache_key] = SQLDatabase.from_uri(self._connection_string())
+        self.db = self._db_cache[cache_key]
+        return self.db
+
+    def _ensure_runtime_dependencies(self) -> None:
+        missing_packages: list[str] = []
+        try:
+            import langchain_community  # noqa: F401
+        except ModuleNotFoundError:
+            missing_packages.append("langchain-community")
+        try:
+            import sqlalchemy  # noqa: F401
+        except ModuleNotFoundError:
+            missing_packages.append("SQLAlchemy")
+        try:
+            import oracledb  # noqa: F401
+        except ModuleNotFoundError:
+            missing_packages.append("oracledb")
+
+        if not missing_packages:
+            return
+
+        if not bool(self.auto_install_packages):
+            raise ModuleNotFoundError(
+                "Missing packages: "
+                + ", ".join(missing_packages)
+                + ". Enable Auto Install Missing Packages or install them in the Langflow runtime."
+            )
+
+        for package in missing_packages:
+            self._pip_install(package)
+
+    def _pip_install(self, package: str) -> None:
+        command = [sys.executable, "-m", "pip", "install", package]
+        trusted_host = self._normalize_trusted_host(self.pip_trusted_host)
+        if trusted_host:
+            command.extend(["--trusted-host", trusted_host])
+        subprocess.check_call(command)
+
+    def _normalize_trusted_host(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        parsed = urlparse(text if "://" in text else f"//{text}")
+        host = parsed.hostname or text.split("/")[0]
+        return host.strip()
+
+    def _run_query(self, query: str) -> Any:
+        db = self._get_db()
+        return db.run(query, include_columns=True)
+
+    @contextmanager
+    def _connect(self):
+        db = self._get_db()
+        engine = getattr(db, "_engine", None) or getattr(db, "engine", None)
+        if engine is None:
+            raise ValueError("SQLDatabase engine is not available")
+        conn = engine.raw_connection()
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _status(self, map_id: Any) -> dict[str, Any]:
         map_id = self._require_map_id(map_id)
@@ -747,5 +842,7 @@ class MigrationCommandTool(Component):
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="ignore")
         return str(value)
+
+
 
 
