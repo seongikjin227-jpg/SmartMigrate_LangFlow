@@ -58,10 +58,13 @@ LLM 기반 SQL 생성은 이 deterministic 실행이 검증된 다음 별도 확
 DB 접속 정보 예시:
 
 ```text
-db_dsn=localhost:1521/xe
-db_user=scott
+db_host=10.10.10.10 또는 db.company.local
+db_port=1521
+db_service_name=ORCLPDB1
+db_username=scott
 db_password=tiger
 system_schema=
 source_schema=
 target_schema=
 ```
+

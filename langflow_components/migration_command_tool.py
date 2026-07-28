@@ -26,43 +26,50 @@ class MigrationCommandTool(Component):
             info='JSON command. Example: {"action":"status","map_id":101}',
         ),
         StrInput(
-            name="db_dsn",
-            display_name="Oracle DSN",
+            name="db_host",
+            display_name="DB Host",
             required=True,
-            advanced=True,
-            info="Example: localhost:1521/xe",
+            info="Oracle host or scan address. Example: 10.10.10.10 or db.company.local",
+        ),
+        IntInput(
+            name="db_port",
+            display_name="DB Port",
+            value=1521,
+            required=True,
+            info="Oracle listener port. Default: 1521",
         ),
         StrInput(
-            name="db_user",
-            display_name="DB User",
+            name="db_service_name",
+            display_name="Service Name",
             required=True,
-            advanced=True,
+            info="Oracle service name. Example: ORCLPDB1",
+        ),
+        StrInput(
+            name="db_username",
+            display_name="Username",
+            required=True,
         ),
         SecretStrInput(
             name="db_password",
-            display_name="DB Password",
+            display_name="Password",
             required=True,
-            advanced=True,
         ),
         StrInput(
             name="system_schema",
             display_name="System Schema",
             required=False,
-            advanced=True,
             info="Schema containing NEXT_MIG_INFO/NEXT_MIG_INFO_DTL/NEXT_MIG_LOG. Leave blank for current user.",
         ),
         StrInput(
             name="source_schema",
             display_name="Source Schema",
             required=False,
-            advanced=True,
             info="Optional schema prefix for source tables in FR_TABLE.",
         ),
         StrInput(
             name="target_schema",
             display_name="Target Schema",
             required=False,
-            advanced=True,
             info="Optional schema prefix for target TO_TABLE.",
         ),
         IntInput(
@@ -70,14 +77,12 @@ class MigrationCommandTool(Component):
             display_name="Default Max Attempts",
             value=3,
             required=False,
-            advanced=True,
         ),
         BoolInput(
             name="allow_generated_sql_execution",
             display_name="Allow Generated SQL Execution",
             value=True,
             required=False,
-            advanced=True,
             info="If false, run_migration_job only saves generated SQL and does not execute it unless USER_EDITED=Y.",
         ),
     ]
@@ -126,7 +131,19 @@ class MigrationCommandTool(Component):
     def _connect(self):
         import oracledb
 
-        return oracledb.connect(user=self.db_user, password=self.db_password, dsn=self.db_dsn)
+        host = str(self.db_host or "").strip()
+        port = int(self.db_port or 1521)
+        service_name = str(self.db_service_name or "").strip()
+        username = str(self.db_username or "").strip()
+        if not host:
+            raise ValueError("DB Host is required")
+        if not service_name:
+            raise ValueError("Service Name is required")
+        if not username:
+            raise ValueError("Username is required")
+
+        dsn = f"{host}:{port}/{service_name}"
+        return oracledb.connect(user=username, password=self.db_password, dsn=dsn)
 
     def _status(self, map_id: Any) -> dict[str, Any]:
         map_id = self._require_map_id(map_id)
@@ -730,3 +747,5 @@ class MigrationCommandTool(Component):
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="ignore")
         return str(value)
+
+
