@@ -133,6 +133,17 @@ LLM 생성이 실패하면 전체 migration은 중단된다. fallback SQL 생성
 - 재실행하려면 사용자가 명시적으로 동의한 뒤 `reset`을 먼저 실행해야 한다.
 - 이전 채팅의 성공/실패 응답은 현재 DB 상태로 간주하지 않는다. 매 요청마다 tool 결과를 다시 확인한다.
 
+다중 job 실행 정책:
+
+- 별도 batch 실행 action은 아직 없다.
+- 사용자가 여러 `map_id` 또는 전체 작업대상 실행을 요청하면 먼저 실행 계획을 만든다.
+- 명시된 `map_id` 목록은 각 job의 `status`를 조회하고, 전체 작업대상은 `list_pending`으로 조회한다.
+- 실행 순서는 선행 의존성, 같은 `TO_TABLE`의 낮은 `PRIORITY`, `PRIORITY ASC`, `MAP_ID ASC` 기준으로 정한다.
+- 실행 계획을 사용자에게 보여주고 확인을 받은 뒤에만 `run_migration_job`을 순차 호출한다.
+- 한 job이 `FAIL-INSERT`, `FAIL-TEST`, `SKIP`, `WAITING`이더라도 전체 실행을 중단하지 않고 다음 계획 job을 계속 실행한다.
+- 선행 job 실패로 실행하면 안 되는 job은 각 `run_migration_job` 호출에서 `SKIP` 또는 `WAITING`으로 처리하고, 그 결과를 누적한다.
+- 전체 중단은 DB/LLM 연결 장애, tool 호출 실패, command_json 오류, 사용자 취소처럼 이후 tool 호출 자체가 의미 없는 경우에만 한다.
+
 ## 확인이 필요한 DB 변경 command
 
 사용자 수정 SQL 저장:
@@ -249,6 +260,7 @@ llm_base_url=사내 LLM gateway URL
 llm_api_key=LLM API Key
 llm_model=claude-haiku-4-5-20251001 또는 사내 모델명
 llm_max_tokens=4096
+llm_timeout_seconds=900
 ```
 
 `test_connection`은 DB와 LLM을 모두 점검한다.

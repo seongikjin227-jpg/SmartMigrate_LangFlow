@@ -93,6 +93,13 @@ class MigrationCommandTool(Component):
             value=4096,
             required=False,
         ),
+        IntInput(
+            name="llm_timeout_seconds",
+            display_name="LLM Timeout Seconds",
+            value=900,
+            required=False,
+            info="HTTP timeout for LLM API calls. Default: 900 seconds.",
+        ),
         MessageTextInput(
             name="mig_sql_prompt",
             display_name="MIG SQL Prompt",
@@ -348,7 +355,8 @@ class MigrationCommandTool(Component):
         req_headers = {"Content-Type": "application/json", **headers}
         request = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            timeout_seconds = max(1, int(self.llm_timeout_seconds or 900))
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                 raw = response.read().decode("utf-8", errors="ignore")
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
@@ -1482,13 +1490,13 @@ class MigrationCommandTool(Component):
                 cur.execute(
                     f"""
                     INSERT INTO {log_table}
-                        (LOG_ID, MAP_ID, MIG_KIND, LOG_TYPE, LOG_LEVEL, STEP_NAME, STATUS,
-                         MESSAGE, GENERATE_SQL, RETRY_COUNT, CREATED_AT, UPD_TS)
+                        (CREATED_AT, STATUS, MESSAGE, LOG_ID, MAP_ID, LOG_TYPE,
+                         LOG_LEVEL, STEP_NAME, RETRY_COUNT, MIG_KIND, GENERATE_SQL)
                     VALUES
-                        ({seq}.NEXTVAL, :1, 'DB_MIG', :2, :3, :4, :5,
-                         :6, :7, :8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        (CURRENT_TIMESTAMP, :1, :2, {seq}.NEXTVAL, :3, :4,
+                         :5, :6, :7, 'DB_MIG', :8)
                     """,
-                    [map_id, log_type, log_level, step_name, status, safe_message, generate_sql, retry_count],
+                    [status, safe_message, map_id, log_type, log_level, step_name, retry_count, generate_sql],
                 )
                 conn.commit()
         except Exception:
