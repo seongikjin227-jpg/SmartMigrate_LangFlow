@@ -19,7 +19,11 @@ Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코�
 ```
 
 ```json
-{"action":"reset","map_id":101}
+{"action":"generate_mig_sql","map_id":101}
+```
+
+```json
+{"action":"generate_verify_sql","map_id":101}
 ```
 
 ```json
@@ -34,10 +38,63 @@ Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코�
 | `list_pending` | 대기 중인 migration job 목록 조회 |
 | `status` | 특정 map_id 상태/상세 매핑 조회 |
 | `get_table_ddl` | `USER_TAB_COLUMNS` 또는 `ALL_TAB_COLUMNS` 기반 테이블 컬럼 메타 조회 |
+| `generate_mig_sql` | LLM 또는 deterministic 방식으로 MIG_SQL 생성 후 저장 |
+| `generate_verify_sql` | LLM 또는 deterministic 방식으로 VERIFY_SQL 생성 후 저장 |
 | `reset` | 특정 map_id 재실행 가능 상태로 초기화 |
 | `save_user_sql` | 사용자가 수정한 MIG_SQL/VERIFY_SQL 저장 |
 | `analyze_failure` | 최근 실패 로그와 저장 SQL 조회 |
 | `run_migration_job` | 매핑 정보 기반 SQL 생성, 실행, 검증, 상태 저장 |
+
+## SQL 생성 command
+
+MIG_SQL 생성:
+
+```json
+{"action":"generate_mig_sql","map_id":101}
+```
+
+VERIFY_SQL 생성:
+
+```json
+{"action":"generate_verify_sql","map_id":101}
+```
+
+기본값:
+
+```json
+{
+  "use_llm": true,
+  "save": true,
+  "fallback_to_deterministic": true
+}
+```
+
+LLM 생성 실패 시 deterministic SQL로 fallback하지 않고 실패시키려면:
+
+```json
+{"action":"generate_mig_sql","map_id":101,"fallback_to_deterministic":false}
+```
+
+DB에 저장하지 않고 미리보기만 하려면:
+
+```json
+{"action":"generate_verify_sql","map_id":101,"save":false}
+```
+
+사용자 수정 SQL 보호 정책:
+
+| 상태 | 동작 |
+| --- | --- |
+| `USER_EDITED=Y`, `MIG_SQL` 있음 | `generate_mig_sql`은 기존 MIG_SQL을 반환하고 새로 생성하지 않음 |
+| `USER_EDITED=Y`, `MIG_SQL` 있음, `VERIFY_SQL` 없음 | `generate_verify_sql`만 생성 허용 |
+| `USER_EDITED=Y`, `MIG_SQL` 있음, `VERIFY_SQL` 있음 | `generate_verify_sql`은 기존 VERIFY_SQL을 반환하고 새로 생성하지 않음 |
+| `USER_EDITED=Y`, `MIG_SQL` 없음 | 생성하지 않고 실패 |
+
+사용자가 명시적으로 재생성을 원할 때만 `force_regenerate=true`를 사용한다.
+
+```json
+{"action":"generate_mig_sql","map_id":101,"force_regenerate":true}
+```
 
 ## 현재 run_migration_job 동작
 
@@ -59,7 +116,7 @@ LLM 기반 SQL 생성은 이 deterministic 실행이 검증된 다음 별도 확
 
 ## Langflow Tool Mode
 
-`command_json`만 `tool_mode=True`다. DB 접속 정보는 Advanced input으로 두고 Agent가 건드리지 않게 한다.
+`command_json`만 `tool_mode=True`다. DB/LLM 접속 정보는 Langflow 화면에서 사람이 직접 입력하고, Agent가 `command_json`으로 건드리지 않게 한다.
 
 DB 접속 정보 예시:
 
