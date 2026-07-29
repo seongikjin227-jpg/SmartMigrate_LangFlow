@@ -7,6 +7,10 @@ Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코�
 ## 먼저 테스트할 command
 
 ```json
+{"action":"test_connection"}
+```
+
+```json
 {"action":"list_pending","limit":5}
 ```
 
@@ -26,8 +30,10 @@ Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코�
 
 | action | 설명 |
 | --- | --- |
+| `test_connection` | DB `SELECT 1 FROM DUAL`과 LLM smoke test를 함께 실행 |
 | `list_pending` | 대기 중인 migration job 목록 조회 |
 | `status` | 특정 map_id 상태/상세 매핑 조회 |
+| `get_table_ddl` | `USER_TAB_COLUMNS` 또는 `ALL_TAB_COLUMNS` 기반 테이블 컬럼 메타 조회 |
 | `reset` | 특정 map_id 재실행 가능 상태로 초기화 |
 | `save_user_sql` | 사용자가 수정한 MIG_SQL/VERIFY_SQL 저장 |
 | `analyze_failure` | 최근 실패 로그와 저장 SQL 조회 |
@@ -137,3 +143,58 @@ db = SQLDatabase.from_uri(connection_string)
 ```
 
 조회는 `db.run(query, include_columns=True)`를 사용하고, 쓰기/커밋이 필요한 작업은 같은 cached `SQLDatabase`의 SQLAlchemy engine을 재사용한다.
+
+## LLM 입력값
+
+기존 `.env.example`의 LLM 설정을 Langflow input으로 옮긴다.
+
+```text
+llm_provider=openai 또는 anthropic
+llm_base_url=사내 LLM gateway URL
+llm_api_key=LLM API Key
+llm_model=claude-haiku-4-5-20251001 또는 사내 모델명
+llm_max_tokens=4096
+```
+
+`test_connection`은 DB와 LLM을 모두 점검한다.
+
+```json
+{"action":"test_connection"}
+```
+
+반환 예시:
+
+```json
+{
+  "ok": true,
+  "db": {"ok": true, "message": "DB connection OK"},
+  "llm": {"ok": true, "provider": "openai", "model": "..."}
+}
+```
+
+LLM provider 동작:
+
+| provider | 호출 방식 |
+| --- | --- |
+| `openai` | OpenAI-compatible `/chat/completions` |
+| `anthropic` | Anthropic `/v1/messages` |
+
+## DDL 조회 command
+
+현재 접속 계정 기준:
+
+```json
+{"action":"get_table_ddl","table_name":"NEXT_MIG_INFO"}
+```
+
+스키마 지정:
+
+```json
+{"action":"get_table_ddl","schema":"SFAADM","table_name":"NEXT_MIG_INFO"}
+```
+
+또는:
+
+```json
+{"action":"get_table_ddl","table_name":"SFAADM.NEXT_MIG_INFO"}
+```

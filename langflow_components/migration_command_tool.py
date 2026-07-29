@@ -1,10 +1,13 @@
 ﻿from __future__ import annotations
 
+import ast
 import json
 import re
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote_plus, urlparse
@@ -59,6 +62,36 @@ class MigrationCommandTool(Component):
             name="db_password",
             display_name="Password",
             required=True,
+        ),
+        StrInput(
+            name="llm_provider",
+            display_name="LLM Provider",
+            value="openai",
+            required=False,
+            info="openai for OpenAI-compatible API, anthropic for Anthropic API.",
+        ),
+        StrInput(
+            name="llm_base_url",
+            display_name="LLM Base URL",
+            required=False,
+            info="Internal LLM gateway base URL. Leave blank to use provider default.",
+        ),
+        SecretStrInput(
+            name="llm_api_key",
+            display_name="LLM API Key",
+            required=False,
+        ),
+        StrInput(
+            name="llm_model",
+            display_name="LLM Model",
+            value="claude-haiku-4-5-20251001",
+            required=False,
+        ),
+        IntInput(
+            name="llm_max_tokens",
+            display_name="LLM Max Tokens",
+            value=4096,
+            required=False,
         ),
         StrInput(
             name="system_schema",
@@ -116,10 +149,14 @@ class MigrationCommandTool(Component):
             action = (command.get("action") or "").strip().lower()
             map_id = command.get("map_id")
 
-            if action == "status":
+            if action == "test_connection":
+                result = self._test_connection()
+            elif action == "status":
                 result = self._status(map_id)
             elif action == "list_pending":
                 result = self._list_pending(command.get("limit", 10))
+            elif action == "get_table_ddl":
+                result = self._get_table_ddl(command.get("table_name"), command.get("schema"))
             elif action == "reset":
                 result = self._reset(map_id, preserve_user_sql=bool(command.get("preserve_user_sql", False)))
             elif action == "save_user_sql":
@@ -227,6 +264,164 @@ class MigrationCommandTool(Component):
     def _run_query(self, query: str) -> Any:
         db = self._get_db()
         return db.run(query, include_columns=True)
+
+    def _test_connection(self) -> dict[str, Any]:
+        db_result = self._test_db_connection()
+        llm_result = self._test_llm_connection()
+        return {
+            "ok": bool(db_result.get("ok")) and bool(llm_result.get("ok")),
+            "db": db_result,
+            "llm": llm_result,
+        }
+
+    def _test_db_connection(self) -> dict[str, Any]:
+        try:
+            rows = self._normalize_query_rows(self._run_query("SELECT 1 AS OK FROM DUAL"))
+            return {"ok": True, "message": "DB connection OK", "result": rows}
+        except Exception as exc:
+            return {"ok": False, "message": "DB connection failed", "error": str(exc)}
+
+    def _test_llm_connection(self) -> dict[str, Any]:
+        provider = str(self.llm_provider or "openai").strip().lower()
+        api_key = str(self.llm_api_key or "").strip()
+        model = str(self.llm_model or "").strip()
+        if not api_key:
+            return {"ok": False, "message": "LLM API key is empty"}
+        if not model:
+            return {"ok": False, "message": "LLM model is empty"}
+        try:
+            if provider == "anthropic":
+                return self._test_anthropic_llm(api_key, model)
+            return self._test_openai_compatible_llm(api_key, model)
+        except Exception as exc:
+            return {"ok": False, "provider": provider, "model": model, "error": str(exc)}
+
+    def _test_openai_compatible_llm(self, api_key: str, model: str) -> dict[str, Any]:
+        base_url = str(self.llm_base_url or "https://api.openai.com/v1").strip().rstrip("/")
+        url = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "Return OK only."}],
+            "max_tokens": 8,
+            "temperature": 0,
+        }
+        data = self._post_json(url, payload, {"Authorization": f"Bearer {api_key}"})
+        content = ""
+        try:
+            content = data["choices"][0]["message"].get("content", "")
+        except Exception:
+            content = ""
+        return {"ok": True, "provider": "openai", "model": model, "url": url, "response_preview": str(content)[:200]}
+
+    def _test_anthropic_llm(self, api_key: str, model: str) -> dict[str, Any]:
+        base_url = str(self.llm_base_url or "https://api.anthropic.com").strip().rstrip("/")
+        url = base_url if base_url.endswith("/messages") else f"{base_url}/v1/messages"
+        payload = {
+            "model": model,
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": "Return OK only."}],
+        }
+        data = self._post_json(
+            url,
+            payload,
+            {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+        )
+        content = ""
+        try:
+            first = data.get("content", [{}])[0]
+            content = first.get("text", "") if isinstance(first, dict) else str(first)
+        except Exception:
+            content = ""
+        return {"ok": True, "provider": "anthropic", "model": model, "url": url, "response_preview": str(content)[:200]}
+
+    def _post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+        body = json.dumps(payload).encode("utf-8")
+        req_headers = {"Content-Type": "application/json", **headers}
+        request = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                raw = response.read().decode("utf-8", errors="ignore")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")[:1000]
+            raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+
+    def _normalize_query_rows(self, raw: Any) -> list[dict[str, Any]]:
+        if raw is None or raw == "":
+            return []
+        if isinstance(raw, list):
+            if not raw:
+                return []
+            if isinstance(raw[0], dict):
+                return raw
+            return [{str(i): value for i, value in enumerate(row)} for row in raw]
+        if isinstance(raw, tuple):
+            return [{str(i): value for i, value in enumerate(raw)}]
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return []
+            try:
+                parsed = ast.literal_eval(text)
+            except Exception:
+                return [{"text": text}]
+            return self._normalize_query_rows(parsed)
+        return [{"value": raw}]
+
+    def _get_value(self, row: dict[str, Any], key: str) -> Any:
+        if key in row:
+            return row[key]
+        for candidate_key, value in row.items():
+            if str(candidate_key).upper() == key.upper():
+                return value
+        return None
+
+    def _get_table_ddl(self, table_name: Any, schema: Any = None) -> dict[str, Any]:
+        clean_table = str(table_name or "").strip().upper()
+        clean_schema = str(schema or "").strip().upper()
+        if not clean_table:
+            raise ValueError("table_name is required")
+        if "." in clean_table and not clean_schema:
+            clean_schema, clean_table = clean_table.split(".", 1)
+        self._validate_identifier(clean_table, "table_name")
+        if clean_schema:
+            self._validate_identifier(clean_schema, "schema")
+            query = f"""
+                SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION,
+                       DATA_SCALE, NULLABLE
+                FROM ALL_TAB_COLUMNS
+                WHERE OWNER = '{clean_schema}'
+                  AND TABLE_NAME = '{clean_table}'
+                ORDER BY COLUMN_ID
+            """
+        else:
+            query = f"""
+                SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION,
+                       DATA_SCALE, NULLABLE
+                FROM USER_TAB_COLUMNS
+                WHERE TABLE_NAME = '{clean_table}'
+                ORDER BY COLUMN_ID
+            """
+        rows = self._normalize_query_rows(self._run_query(query))
+        columns = [
+            {
+                "column_id": self._get_value(row, "COLUMN_ID"),
+                "column_name": self._to_text(self._get_value(row, "COLUMN_NAME")),
+                "data_type": self._to_text(self._get_value(row, "DATA_TYPE")),
+                "data_length": self._get_value(row, "DATA_LENGTH"),
+                "data_precision": self._get_value(row, "DATA_PRECISION"),
+                "data_scale": self._get_value(row, "DATA_SCALE"),
+                "nullable": self._to_text(self._get_value(row, "NULLABLE")),
+            }
+            for row in rows
+        ]
+        return {
+            "ok": True,
+            "schema": clean_schema or "CURRENT_USER",
+            "table_name": clean_table,
+            "column_count": len(columns),
+            "columns": columns,
+        }
 
     @contextmanager
     def _connect(self):
