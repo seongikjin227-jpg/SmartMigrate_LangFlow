@@ -1,5 +1,12 @@
 # Migration Prompt Inputs
 
+Common placeholders:
+- `{ddl_info_block}`: source/target DDL-like column information
+- `{from_table}`, `{to_table}`, `{condition}`, `{mapping_info}`: migration metadata
+- `{retry_context}`: previous error and previous SQL block during retry. Empty on the first attempt
+- `{last_error}`: previous error message during retry. Empty on the first attempt
+- `{last_sql}`: previous failed SQL during retry. Empty on the first attempt
+
 Langflow `Migration Command Tool`의 prompt input에 넣을 텍스트다.
 
 ## MIG SQL Prompt
@@ -33,8 +40,15 @@ Generate Oracle 19c migration SQL using only the provided mapping rules and DDL 
    - Keep every alias within Oracle's 30 byte identifier limit.
 5. Type safety:
    - When comparing or converting NUMBER, VARCHAR2, DATE, or TIMESTAMP values, use explicit CAST, TO_NUMBER, TO_DATE, or TO_TIMESTAMP as needed.
+6. WHERE clause safety:
+   - Never generate duplicate WHERE keywords such as `WHERE WHERE`.
+   - The source filter condition may already start with `WHERE`. If it does, use it as-is.
+   - If the source filter condition does not start with `WHERE`, add exactly one `WHERE` before it.
+   - If the source filter condition is blank, omit the WHERE clause entirely.
 
 {ddl_info_block}
+
+{retry_context}
 
 [Mapping rules]
 - Source table: {from_table}
@@ -47,7 +61,7 @@ Generate Oracle 19c migration SQL using only the provided mapping rules and DDL 
 INSERT INTO {to_table} (target_columns...)
 SELECT source_expressions...
 FROM {from_table}
-[WHERE condition]
+[optional source filter condition, with exactly one WHERE keyword when needed]
 
 [JSON shape]
 {
@@ -88,8 +102,15 @@ Generate Oracle 19c verification SQL using only the provided mapping rules and D
    - Do not use non-Oracle syntax such as LIMIT.
    - Keep aliases short, preferably 1-5 characters.
    - Keep every alias within Oracle's 30 byte identifier limit.
+5. WHERE clause safety:
+   - Never generate duplicate WHERE keywords such as `WHERE WHERE`.
+   - The source filter condition may already start with `WHERE`. If it does, use it as-is.
+   - If the source filter condition does not start with `WHERE`, add exactly one `WHERE` before it.
+   - If the source filter condition is blank, omit the WHERE clause entirely.
 
 {ddl_info_block}
+
+{retry_context}
 
 [Mapping rules]
 - Source table: {from_table}
@@ -106,7 +127,7 @@ FROM (SELECT COUNT(*) TOT,
              COUNT(source_non_lob_col1) C1,
              COUNT(source_non_lob_col2) C2
       FROM {from_table}
-      [WHERE CONDITION]) S,
+      [optional source filter condition, with exactly one WHERE keyword when needed]) S,
      (SELECT COUNT(*) TOT,
              COUNT(target_non_lob_col1) C1,
              COUNT(target_non_lob_col2) C2

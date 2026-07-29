@@ -82,6 +82,7 @@ LLM 생성이 실패하면 fallback 없이 실패한다.
 - `generate_mig_sql`, `generate_verify_sql`은 DB를 업데이트하지 않고 `USER_EDITED` 값도 변경하지 않는다.
 - `USER_EDITED=Y`는 `save_user_sql`로 사용자가 직접 수정 SQL을 저장할 때만 설정한다.
 - `PRIOR_MAP_ID`가 있고 선행 작업이 `PASS`가 아니면 SQL 생성도 진행하지 않는다.
+- 같은 `TO_TABLE`에서 현재 job보다 `PRIORITY`가 낮은 선행 작업이 모두 `PASS`여야 진행한다.
 - `NEXT_MIG_INFO_DTL.TO_COL`이 비어 있는 매핑은 target insert 컬럼에서 제외한다. 이 값은 스킵되었거나 다른 expression에 합쳐진 컬럼으로 본다.
 - LLM 프롬프트는 파일에서 읽지 않는다. Langflow input인 `mig_sql_prompt`, `verify_sql_prompt` 두 개로 받는다.
 - `MIG_SQL`에 저장되는 값은 단일 `INSERT` 문이어야 한다.
@@ -120,8 +121,17 @@ Retry 정책:
 - 최대 시도 초과 또는 최종 성공 시에만 `NEXT_MIG_INFO.STATUS`와 `RETRY_COUNT`를 저장한다.
 - `FAIL-INSERT`이면 다음 attempt에서 `MIG_SQL`을 다시 생성하고 다시 실행한다.
 - `FAIL-TEST`이면 `MIG_SQL`은 다시 실행하지 않고 `VERIFY_SQL`만 다시 생성하고 검증한다.
+- retry 재생성 시 직전 실패 메시지와 직전 SQL을 `{retry_context}`, `{last_error}`, `{last_sql}` placeholder로 프롬프트에 전달한다.
 
 LLM 생성이 실패하면 전체 migration은 중단된다. fallback SQL 생성은 사용하지 않는다.
+
+재실행 정책:
+
+- 별도 `rerun` action은 없다.
+- 사용자가 재실행을 요청하면 먼저 `status`로 현재 DB 상태를 다시 확인한다.
+- `STATUS`가 `NULL`이 아니면 바로 `run_migration_job`을 호출하지 않는다.
+- 재실행하려면 사용자가 명시적으로 동의한 뒤 `reset`을 먼저 실행해야 한다.
+- 이전 채팅의 성공/실패 응답은 현재 DB 상태로 간주하지 않는다. 매 요청마다 tool 결과를 다시 확인한다.
 
 ## 확인이 필요한 DB 변경 command
 

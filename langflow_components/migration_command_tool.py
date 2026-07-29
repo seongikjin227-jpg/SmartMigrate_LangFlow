@@ -97,13 +97,13 @@ class MigrationCommandTool(Component):
             name="mig_sql_prompt",
             display_name="MIG SQL Prompt",
             required=False,
-            info="Prompt template for generate_mig_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}.",
+            info="Prompt template for generate_mig_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}, {retry_context}, {last_error}, {last_sql}.",
         ),
         MessageTextInput(
             name="verify_sql_prompt",
             display_name="VERIFY SQL Prompt",
             required=False,
-            info="Prompt template for generate_verify_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}.",
+            info="Prompt template for generate_verify_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}, {retry_context}, {last_error}, {last_sql}.",
         ),
         StrInput(
             name="system_schema",
@@ -631,7 +631,7 @@ class MigrationCommandTool(Component):
 
         dep = self._check_dependencies(job)
         if dep["status"] != "READY":
-            final_status = "SKIP" if dep["status"] == "FAIL" else "WAITING"
+            final_status = "SKIP" if dep["status"] in {"FAIL", "SKIP"} else "WAITING"
             return {"ok": False, "map_id": map_id, "status": final_status, "message": dep["message"]}
 
         details = self._load_details(map_id)
@@ -642,7 +642,7 @@ class MigrationCommandTool(Component):
         llm_error = ""
 
         try:
-            prompt = self._migration_sql_prompt(job, details)
+            prompt = self._migration_sql_prompt(job, details, command)
             mig_sql = self._sanitize_migration_sql(
                 self._extract_sql(self._call_llm(prompt), expected="insert", key="migration_sql")
             )
@@ -698,7 +698,7 @@ class MigrationCommandTool(Component):
 
         dep = self._check_dependencies(job)
         if dep["status"] != "READY":
-            final_status = "SKIP" if dep["status"] == "FAIL" else "WAITING"
+            final_status = "SKIP" if dep["status"] in {"FAIL", "SKIP"} else "WAITING"
             return {"ok": False, "map_id": map_id, "status": final_status, "message": dep["message"]}
 
         details = self._load_details(map_id)
@@ -706,7 +706,7 @@ class MigrationCommandTool(Component):
         llm_error = ""
 
         try:
-            prompt = self._verify_sql_prompt(job, details)
+            prompt = self._verify_sql_prompt(job, details, command)
             verify_sql = self._sanitize_verify_sql(
                 self._extract_sql(self._call_llm(prompt), expected="select", key="verification_sql")
             )
@@ -735,25 +735,36 @@ class MigrationCommandTool(Component):
             "verify_sql": verify_sql,
         }
 
-    def _migration_sql_prompt(self, job: dict[str, Any], details: list[dict[str, Any]]) -> str:
+    def _migration_sql_prompt(self, job: dict[str, Any], details: list[dict[str, Any]], command: dict[str, Any]) -> str:
         return self._render_sql_prompt(
             template=self._require_prompt("mig_sql_prompt", "MIG SQL Prompt"),
             job=job,
             details=details,
+            command=command,
         )
 
-    def _verify_sql_prompt(self, job: dict[str, Any], details: list[dict[str, Any]]) -> str:
+    def _verify_sql_prompt(self, job: dict[str, Any], details: list[dict[str, Any]], command: dict[str, Any]) -> str:
         return self._render_sql_prompt(
             template=self._require_prompt("verify_sql_prompt", "VERIFY SQL Prompt"),
             job=job,
             details=details,
+            command=command,
         )
 
-    def _render_sql_prompt(self, template: str, job: dict[str, Any], details: list[dict[str, Any]]) -> str:
+    def _render_sql_prompt(
+        self,
+        template: str,
+        job: dict[str, Any],
+        details: list[dict[str, Any]],
+        command: dict[str, Any],
+    ) -> str:
         to_table = self._qualify_table(job.get("to_table", ""), self.target_schema)
         from_table = self._qualify_source_expression(job.get("fr_table", ""))
         mapping_info = self._format_mapping_info(details)
         ddl_info_block = self._build_ddl_info_block(from_table, to_table)
+        last_error = str(command.get("last_error") or "").strip()
+        last_sql = str(command.get("last_sql") or "").strip()
+        retry_context = self._build_retry_context(last_error, last_sql, command.get("retry_count"))
         return self._replace_prompt_vars(
             template,
             ddl_info_block=ddl_info_block,
@@ -761,6 +772,25 @@ class MigrationCommandTool(Component):
             to_table=to_table,
             mapping_info=mapping_info,
             condition=str(job.get("condition") or "").strip(),
+            retry_context=retry_context,
+            last_error=last_error,
+            last_sql=last_sql,
+        )
+
+    def _build_retry_context(self, last_error: str, last_sql: str, retry_count: Any = None) -> str:
+        if not last_error and not last_sql:
+            return ""
+        retry_label = ""
+        if retry_count is not None:
+            retry_label = f"Retry count: {retry_count}\n"
+        return (
+            "[Retry context]\n"
+            f"{retry_label}"
+            f"Previous error:\n{last_error or '(none)'}\n\n"
+            f"Previous SQL:\n{last_sql or '(none)'}\n\n"
+            "Regenerate SQL by fixing the previous error. Do not repeat the same failing SQL.\n"
+            "If the previous SQL contains duplicate WHERE clauses such as WHERE WHERE, remove the duplicate keyword.\n"
+            "When applying the source filter condition, add WHERE only if the condition text does not already start with WHERE."
         )
 
     def _replace_prompt_vars(self, template: str, **values: str) -> str:
@@ -951,7 +981,7 @@ class MigrationCommandTool(Component):
 
         dep = self._check_dependencies(job)
         if dep["status"] != "READY":
-            final_status = "SKIP" if dep["status"] == "FAIL" else "WAITING"
+            final_status = "SKIP" if dep["status"] in {"FAIL", "SKIP"} else "WAITING"
             if final_status == "SKIP":
                 self._update_job_status(map_id, "SKIP", 0, int(job.get("retry_count") or 0))
             self._write_log(map_id, "DEPENDENCY", "WARN", "DEP_CHECK", final_status, dep["message"])
@@ -985,7 +1015,13 @@ class MigrationCommandTool(Component):
                             raise ValueError("USER_EDITED=Y but MIG_SQL is empty")
                         steps.append({"step": "generate_mig_sql", "attempt": attempt, "status": "SKIPPED_USER_EDITED"})
                     else:
-                        mig_result = self._generate_mig_sql(map_id, generation_command)
+                        mig_command = {
+                            **generation_command,
+                            "retry_count": retry_count,
+                            "last_error": last_failure.get("error", ""),
+                            "last_sql": str(job.get("mig_sql") or ""),
+                        }
+                        mig_result = self._generate_mig_sql(map_id, mig_command)
                         steps.append({"step": "generate_mig_sql", "attempt": attempt, **self._summary_result(mig_result)})
                         if not mig_result.get("ok"):
                             last_failure = {"status": "FAIL-INSERT", "error": mig_result.get("error") or "MIG_SQL generation failed"}
@@ -1013,7 +1049,13 @@ class MigrationCommandTool(Component):
                 if user_edited and verify_sql:
                     steps.append({"step": "generate_verify_sql", "attempt": attempt, "status": "SKIPPED_USER_EDITED"})
                 else:
-                    verify_result = self._generate_verify_sql(map_id, generation_command)
+                    verify_command = {
+                        **generation_command,
+                        "retry_count": retry_count,
+                        "last_error": last_failure.get("error", ""),
+                        "last_sql": str(job.get("verify_sql") or ""),
+                    }
+                    verify_result = self._generate_verify_sql(map_id, verify_command)
                     steps.append({"step": "generate_verify_sql", "attempt": attempt, **self._summary_result(verify_result)})
                     if not verify_result.get("ok"):
                         last_failure = {"status": "FAIL-TEST", "error": verify_result.get("error") or "VERIFY_SQL generation failed"}
@@ -1148,15 +1190,69 @@ class MigrationCommandTool(Component):
 
     def _check_dependencies(self, job: dict[str, Any]) -> dict[str, str]:
         prior_map_id = job.get("prior_map_id")
-        if prior_map_id is None or int(prior_map_id) <= 0:
-            return {"status": "READY", "message": "No prior dependency"}
-        prior = self._load_job(int(prior_map_id))
-        if not prior:
-            return {"status": "PENDING", "message": f"Prior MAP_ID={prior_map_id} not found"}
-        prior_status = str(prior.get("status") or "").upper()
-        if prior_status != "PASS":
-            return {"status": prior_status or "PENDING", "message": f"Prior MAP_ID={prior_map_id} status={prior_status or 'NULL'}"}
-        return {"status": "READY", "message": "Prior dependency passed"}
+        try:
+            prior_map_id_int = int(prior_map_id) if prior_map_id is not None and str(prior_map_id).strip() else 0
+        except (TypeError, ValueError):
+            return {"status": "PENDING", "message": f"Invalid PRIOR_MAP_ID={prior_map_id}"}
+
+        if prior_map_id_int > 0:
+            prior = self._load_job(prior_map_id_int)
+            if not prior:
+                return {"status": "PENDING", "message": f"Prior MAP_ID={prior_map_id} not found"}
+            prior_status = str(prior.get("status") or "").upper()
+            if prior_status != "PASS":
+                return {"status": prior_status or "PENDING", "message": f"Prior MAP_ID={prior_map_id} status={prior_status or 'NULL'}"}
+
+        target_dep = self._check_same_target_priority_dependencies(job)
+        if target_dep["status"] != "READY":
+            return target_dep
+
+        return {"status": "READY", "message": "Dependencies passed"}
+
+    def _check_same_target_priority_dependencies(self, job: dict[str, Any]) -> dict[str, str]:
+        to_table = str(job.get("to_table") or "").strip()
+        priority = job.get("priority")
+        map_id = int(job.get("map_id") or 0)
+        if not to_table or priority is None:
+            return {"status": "READY", "message": "No same-target priority dependency"}
+
+        map_table = self._system_table("NEXT_MIG_INFO")
+        with self._connect() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    f"""
+                    SELECT MAP_ID, STATUS
+                    FROM {map_table}
+                    WHERE DBMS_LOB.SUBSTR(TO_TABLE, 200, 1) = :1
+                      AND PRIORITY < :2
+                      AND MAP_ID != :3
+                    ORDER BY PRIORITY DESC, MAP_ID DESC
+                    """,
+                    [to_table, priority, map_id],
+                )
+            except Exception:
+                cur.execute(
+                    f"""
+                    SELECT MAP_ID, STATUS
+                    FROM {map_table}
+                    WHERE TO_TABLE = :1
+                      AND PRIORITY < :2
+                      AND MAP_ID != :3
+                    ORDER BY PRIORITY DESC, MAP_ID DESC
+                    """,
+                    [to_table, priority, map_id],
+                )
+            rows = cur.fetchall()
+
+        for prior_map_id, status in rows:
+            prior_status = str(self._to_text(status) or "").strip().upper()
+            if prior_status != "PASS":
+                return {
+                    "status": prior_status or "PENDING",
+                    "message": f"Same target prior MAP_ID={prior_map_id} status={prior_status or 'NULL'}",
+                }
+        return {"status": "READY", "message": "Same-target priority dependencies passed"}
 
     def _save_mig_sql(self, map_id: int, mig_sql: str) -> None:
         map_table = self._system_table("NEXT_MIG_INFO")
