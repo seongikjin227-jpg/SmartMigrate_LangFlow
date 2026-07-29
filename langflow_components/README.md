@@ -27,6 +27,14 @@ Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코�
 ```
 
 ```json
+{"action":"execute_mig_sql","map_id":101}
+```
+
+```json
+{"action":"execute_verify_sql","map_id":101}
+```
+
+```json
 {"action":"run_migration_job","map_id":101}
 ```
 
@@ -40,6 +48,8 @@ Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코�
 | `get_table_ddl` | `USER_TAB_COLUMNS` 또는 `ALL_TAB_COLUMNS` 기반 테이블 컬럼 메타 조회 |
 | `generate_mig_sql` | LLM 또는 deterministic 방식으로 MIG_SQL 생성 후 저장 |
 | `generate_verify_sql` | LLM 또는 deterministic 방식으로 VERIFY_SQL 생성 후 저장 |
+| `execute_mig_sql` | 저장된 MIG_SQL 실행 후 성공 시 `SUCCESS-MIG` 상태 저장 |
+| `execute_verify_sql` | 저장된 VERIFY_SQL 실행 후 검증 성공 시 `PASS`, 실패 시 `FAIL-TEST` 저장 |
 | `reset` | 특정 map_id 재실행 가능 상태로 초기화 |
 | `save_user_sql` | 사용자가 수정한 MIG_SQL/VERIFY_SQL 저장 |
 | `analyze_failure` | 최근 실패 로그와 저장 SQL 조회 |
@@ -109,6 +119,36 @@ DB에 저장하지 않고 미리보기만 하려면:
 - SQL 값 끝의 세미콜론은 제거해서 저장한다.
 
 프롬프트 input에 넣을 텍스트는 `langflow/06_migration_prompt_inputs.md`를 참고한다.
+
+## SQL 실행 command
+
+저장된 MIG_SQL 실행:
+
+```json
+{"action":"execute_mig_sql","map_id":101}
+```
+
+동작:
+
+- `USE_YN=Y`인지 확인한다.
+- `PRIOR_MAP_ID`가 있으면 선행 작업이 `PASS`인지 확인한다.
+- `MIG_SQL`은 단일 `INSERT` 문만 허용한다.
+- `TRUNC_YN=Y`이면 target table을 먼저 truncate한다. 단, `MIG_SQL` 컬럼에는 truncate SQL을 저장하지 않는다.
+- 성공 시 `NEXT_MIG_INFO.STATUS='SUCCESS-MIG'`로 업데이트한다.
+- 실패 시 `NEXT_MIG_INFO.STATUS='FAIL-INSERT'`로 업데이트한다.
+
+저장된 VERIFY_SQL 실행:
+
+```json
+{"action":"execute_verify_sql","map_id":101}
+```
+
+동작:
+
+- `VERIFY_SQL`은 단일 `SELECT` 또는 `WITH` 문만 허용한다.
+- 결과 row의 모든 값이 0이면 `PASS`로 업데이트한다.
+- 하나라도 0이 아니면 `FAIL-TEST`로 업데이트한다.
+- 실행 결과는 `result_rows`에 같이 반환한다.
 
 ## 현재 run_migration_job 동작
 

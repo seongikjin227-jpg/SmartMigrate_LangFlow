@@ -42,6 +42,8 @@ Supported migration actions:
 - get_table_ddl
 - generate_mig_sql
 - generate_verify_sql
+- execute_mig_sql
+- execute_verify_sql
 - run_migration_job
 - save_user_sql
 - analyze_failure
@@ -75,10 +77,16 @@ Call the Migration Command Tool with one of these command_json action payloads:
 8. Save user-corrected SQL
 {"action":"save_user_sql","map_id":101,"mig_sql":"...","verify_sql":"..."}
 
-9. Analyze a failed migration job
+9. Execute saved migration SQL
+{"action":"execute_mig_sql","map_id":101}
+
+10. Execute saved verification SQL
+{"action":"execute_verify_sql","map_id":101}
+
+11. Analyze a failed migration job
 {"action":"analyze_failure","map_id":101}
 
-10. Reset a job only when the user explicitly asks for reset/retry preparation
+12. Reset a job only when the user explicitly asks for reset/retry preparation
 {"action":"reset","map_id":101}
 
 Decision rules:
@@ -98,11 +106,13 @@ Decision rules:
 14. Empty TO_COL mappings are not fatal. Treat them as skipped target columns or source expressions used by another mapping.
 15. Generated MIG_SQL must be a single INSERT statement only. It must not include TRUNCATE, COMMIT, ROLLBACK, MERGE, UPDATE, DELETE, DROP, ALTER, markdown, comments, or a trailing semicolon.
 16. Generated VERIFY_SQL must be a single SELECT or WITH query only. It must not modify data or include COMMIT/ROLLBACK.
-17. Do not ask the user for source_ddl, target_ddl, retry_count, internal status columns, DB credentials, or LLM credentials.
-18. Do not expose DB passwords, API keys, or connection strings in the final answer.
-19. Summarize tool results in Korean.
-20. If the tool returns ok=false, explain which part failed and the next concrete action.
-21. Do not call reset unless the user clearly requests it.
+17. For step-by-step execution, call execute_mig_sql first. If it returns SUCCESS-MIG, call execute_verify_sql.
+18. If execute_verify_sql returns PASS, report final success. If it returns FAIL-TEST, do not rerun automatically; explain the mismatch.
+19. Do not ask the user for source_ddl, target_ddl, retry_count, internal status columns, DB credentials, or LLM credentials.
+20. Do not expose DB passwords, API keys, or connection strings in the final answer.
+21. Summarize tool results in Korean.
+22. If the tool returns ok=false, explain which part failed and the next concrete action.
+23. Do not call reset unless the user clearly requests it.
 
 Important:
 - The tool owns SQL generation, SQL execution, verification, status updates, and DB logging.
@@ -170,7 +180,7 @@ Langflow의 Migration Command Tool description에는 아래처럼 넣는다.
 ```text
 Controls SmartMigration DB migration jobs.
 Input is a JSON string named command_json.
-Use this tool for test_connection, get_table_ddl, generate_mig_sql, generate_verify_sql, status lookup, pending job lookup, running one migration job, saving user-corrected SQL, analyzing failures, and reset only when explicitly requested.
+Use this tool for test_connection, get_table_ddl, generate_mig_sql, generate_verify_sql, execute_mig_sql, execute_verify_sql, status lookup, pending job lookup, running one migration job, saving user-corrected SQL, analyzing failures, and reset only when explicitly requested.
 DB and LLM settings are component inputs, not command_json fields.
 ```
 
@@ -192,6 +202,14 @@ Agent가 Tool Mode에서 생성해야 하는 JSON만 모아둔다.
 
 ```json
 {"action":"generate_verify_sql","map_id":101}
+```
+
+```json
+{"action":"execute_mig_sql","map_id":101}
+```
+
+```json
+{"action":"execute_verify_sql","map_id":101}
 ```
 
 ```json
@@ -252,6 +270,14 @@ SQL generated:
 MAP_ID 101의 MIG_SQL과 VERIFY_SQL을 생성해 저장했습니다.
 생성 방식: LLM
 다음 조치: SQL을 검토한 뒤 실행하세요.
+```
+
+Migration SQL executed:
+
+```text
+MAP_ID 101의 MIG_SQL 실행이 완료되었습니다.
+상태: SUCCESS-MIG
+다음 조치: VERIFY_SQL을 실행해 최종 검증하세요.
 ```
 
 Migration success:

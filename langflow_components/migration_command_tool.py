@@ -173,6 +173,10 @@ class MigrationCommandTool(Component):
                 result = self._generate_mig_sql(map_id, command)
             elif action == "generate_verify_sql":
                 result = self._generate_verify_sql(map_id, command)
+            elif action == "execute_mig_sql":
+                result = self._execute_mig_sql_action(map_id)
+            elif action == "execute_verify_sql":
+                result = self._execute_verify_sql_action(map_id)
             elif action == "reset":
                 result = self._reset(map_id, preserve_user_sql=self._as_bool(command.get("preserve_user_sql", False)))
             elif action == "save_user_sql":
@@ -754,6 +758,132 @@ class MigrationCommandTool(Component):
             "verify_sql": verify_sql,
         }
 
+    def _execute_mig_sql_action(self, map_id: Any) -> dict[str, Any]:
+        map_id = self._require_map_id(map_id)
+        started = time.perf_counter()
+        job = self._load_job(map_id)
+        if not job:
+            return {"ok": False, "map_id": map_id, "error": "job not found"}
+        if str(job.get("use_yn") or "").upper() != "Y":
+            return {"ok": False, "map_id": map_id, "status": "SKIP", "error": "USE_YN is not Y"}
+
+        dep = self._check_dependencies(job)
+        if dep["status"] != "READY":
+            final_status = "SKIP" if dep["status"] == "FAIL" else "WAITING"
+            if final_status == "SKIP":
+                self._update_job_status(map_id, "SKIP", 0, int(job.get("retry_count") or 0))
+            self._write_log(map_id, "DEPENDENCY", "WARN", "DEP_CHECK", final_status, dep["message"])
+            return {"ok": False, "map_id": map_id, "status": final_status, "message": dep["message"]}
+
+        retry_count = int(job.get("retry_count") or 0)
+        mig_sql = ""
+        try:
+            mig_sql = self._sanitize_migration_sql(str(job.get("mig_sql") or ""))
+            if str(job.get("trunc_yn") or "").upper() == "Y":
+                self._truncate_target(job)
+                self._write_log(map_id, "EXECUTE_SQL", "INFO", "TRUNCATE", "PASS", "Target table truncated", retry_count)
+
+            affected_rows = self._execute_sql_script(mig_sql)
+            elapsed = int(time.perf_counter() - started)
+            self._update_job_status(map_id, "SUCCESS-MIG", elapsed, retry_count)
+            self._write_log(
+                map_id,
+                "EXECUTE_SQL",
+                "INFO",
+                "SQL_EXEC",
+                "SUCCESS-MIG",
+                f"Migration SQL executed. affected_rows={affected_rows}",
+                retry_count,
+                mig_sql,
+            )
+            return {
+                "ok": True,
+                "map_id": map_id,
+                "status": "SUCCESS-MIG",
+                "message": "Migration SQL executed",
+                "affected_rows": affected_rows,
+                "elapsed_seconds": elapsed,
+            }
+        except Exception as exc:
+            elapsed = int(time.perf_counter() - started)
+            retry_count += 1
+            self._update_job_status(map_id, "FAIL-INSERT", elapsed, retry_count)
+            self._write_log(
+                map_id,
+                "ROW_ERROR",
+                "ERROR",
+                "SQL_EXEC",
+                "FAIL-INSERT",
+                str(exc)[:3900],
+                retry_count,
+                mig_sql,
+            )
+            return {
+                "ok": False,
+                "map_id": map_id,
+                "status": "FAIL-INSERT",
+                "error": str(exc),
+                "elapsed_seconds": elapsed,
+                "retry_count": retry_count,
+            }
+
+    def _execute_verify_sql_action(self, map_id: Any) -> dict[str, Any]:
+        map_id = self._require_map_id(map_id)
+        started = time.perf_counter()
+        job = self._load_job(map_id)
+        if not job:
+            return {"ok": False, "map_id": map_id, "error": "job not found"}
+
+        retry_count = int(job.get("retry_count") or 0)
+        verify_sql = ""
+        try:
+            verify_sql = self._sanitize_verify_sql(str(job.get("verify_sql") or ""))
+            verify_ok, verify_message, rows = self._execute_verify_sql_with_rows(verify_sql)
+            elapsed = int(time.perf_counter() - started)
+            final_status = "PASS" if verify_ok else "FAIL-TEST"
+            self._update_job_status(map_id, final_status, elapsed, retry_count)
+            self._write_log(
+                map_id,
+                "VERIFY_SQL",
+                "INFO" if verify_ok else "ERROR",
+                "VERIFY",
+                final_status,
+                verify_message,
+                retry_count,
+                verify_sql,
+            )
+            return {
+                "ok": verify_ok,
+                "map_id": map_id,
+                "status": final_status,
+                "message": verify_message,
+                "elapsed_seconds": elapsed,
+                "retry_count": retry_count,
+                "result_rows": rows,
+            }
+        except Exception as exc:
+            elapsed = int(time.perf_counter() - started)
+            retry_count += 1
+            self._update_job_status(map_id, "FAIL-TEST", elapsed, retry_count)
+            self._write_log(
+                map_id,
+                "VERIFY_SQL",
+                "ERROR",
+                "VERIFY",
+                "FAIL-TEST",
+                str(exc)[:3900],
+                retry_count,
+                verify_sql,
+            )
+            return {
+                "ok": False,
+                "map_id": map_id,
+                "status": "FAIL-TEST",
+                "error": str(exc),
+                "elapsed_seconds": elapsed,
+                "retry_count": retry_count,
+            }
+
     def _migration_sql_prompt(self, job: dict[str, Any], details: list[dict[str, Any]], deterministic_sql: str) -> str:
         return self._render_sql_prompt(
             template=self._require_prompt("mig_sql_prompt", "MIG SQL Prompt"),
@@ -1223,21 +1353,30 @@ class MigrationCommandTool(Component):
             cur.execute(f"TRUNCATE TABLE {target}")
             conn.commit()
 
-    def _execute_sql_script(self, sql_script: str) -> None:
+    def _execute_sql_script(self, sql_script: str) -> int:
         statements = self._split_sql_script(sql_script)
+        total_rowcount = 0
         with self._connect() as conn:
             cur = conn.cursor()
             for stmt in statements:
                 cleaned = stmt.strip().rstrip(";")
                 if cleaned:
                     cur.execute(cleaned)
+                    if cur.rowcount and cur.rowcount > 0:
+                        total_rowcount += cur.rowcount
             conn.commit()
+        return total_rowcount
 
     def _execute_verify_sql(self, verify_sql: str) -> tuple[bool, str]:
+        verify_ok, verify_message, _rows = self._execute_verify_sql_with_rows(verify_sql)
+        return verify_ok, verify_message
+
+    def _execute_verify_sql_with_rows(self, verify_sql: str) -> tuple[bool, str, list[dict[str, Any]]]:
         statements = self._split_sql_script(verify_sql)
         if not statements:
-            return False, "verify_sql is empty"
+            return False, "verify_sql is empty", []
         last_rows = []
+        columns = []
         with self._connect() as conn:
             cur = conn.cursor()
             for stmt in statements:
@@ -1246,14 +1385,19 @@ class MigrationCommandTool(Component):
                     continue
                 cur.execute(cleaned)
                 if cur.description:
+                    columns = [desc[0] for desc in cur.description]
                     last_rows = cur.fetchall()
         if not last_rows:
-            return False, "Verification SQL returned no rows"
+            return False, "Verification SQL returned no rows", []
+        result_rows = [
+            {str(columns[i] if i < len(columns) else i): self._to_text(value) for i, value in enumerate(row)}
+            for row in last_rows
+        ]
         for row in last_rows:
             for value in row:
                 if not self._is_zero(value):
-                    return False, f"Mismatch found: {row}"
-        return True, "All Verification Passed"
+                    return False, f"Mismatch found: {row}", result_rows
+        return True, "All Verification Passed", result_rows
 
     def _update_job_status(self, map_id: int, status: str, elapsed_seconds: int, retry_count: int) -> None:
         map_table = self._system_table("NEXT_MIG_INFO")
