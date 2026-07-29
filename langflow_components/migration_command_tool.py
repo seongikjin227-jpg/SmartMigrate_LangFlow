@@ -97,13 +97,13 @@ class MigrationCommandTool(Component):
             name="mig_sql_prompt",
             display_name="MIG SQL Prompt",
             required=False,
-            info="Prompt template for generate_mig_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}, {deterministic_sql}.",
+            info="Prompt template for generate_mig_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}.",
         ),
         MessageTextInput(
             name="verify_sql_prompt",
             display_name="VERIFY SQL Prompt",
             required=False,
-            info="Prompt template for generate_verify_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}, {deterministic_sql}.",
+            info="Prompt template for generate_verify_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}.",
         ),
         StrInput(
             name="system_schema",
@@ -128,13 +128,6 @@ class MigrationCommandTool(Component):
             display_name="Default Max Attempts",
             value=3,
             required=False,
-        ),
-        BoolInput(
-            name="allow_generated_sql_execution",
-            display_name="Allow Generated SQL Execution",
-            value=True,
-            required=False,
-            info="If false, run_migration_job only saves generated SQL and does not execute it unless USER_EDITED=Y.",
         ),
         BoolInput(
             name="auto_install_packages",
@@ -173,12 +166,8 @@ class MigrationCommandTool(Component):
                 result = self._generate_mig_sql(map_id, command)
             elif action == "generate_verify_sql":
                 result = self._generate_verify_sql(map_id, command)
-            elif action == "execute_mig_sql":
-                result = self._execute_mig_sql_action(map_id)
-            elif action == "execute_verify_sql":
-                result = self._execute_verify_sql_action(map_id)
             elif action == "reset":
-                result = self._reset(map_id, preserve_user_sql=self._as_bool(command.get("preserve_user_sql", False)))
+                result = self._reset(map_id)
             elif action == "save_user_sql":
                 result = self._save_user_sql(map_id, command)
             elif action == "analyze_failure":
@@ -499,40 +488,42 @@ class MigrationCommandTool(Component):
         ]
         return {"ok": True, "count": len(jobs), "jobs": jobs}
 
-    def _reset(self, map_id: Any, preserve_user_sql: bool = False) -> dict[str, Any]:
+    def _reset(self, map_id: Any) -> dict[str, Any]:
         map_id = self._require_map_id(map_id)
+        command = self._parse_command()
+        if not self._as_bool(command.get("confirm", False)):
+            return {
+                "ok": False,
+                "map_id": map_id,
+                "status": "CONFIRM_REQUIRED",
+                "error": "reset requires confirm=true because it changes DB state.",
+            }
         map_table = self._system_table("NEXT_MIG_INFO")
-        if preserve_user_sql:
-            sql = f"""
-                UPDATE {map_table}
-                SET STATUS = NULL,
-                    RETRY_COUNT = 0,
-                    BATCH_CNT = 0,
-                    UPD_TS = CURRENT_TIMESTAMP
-                WHERE MAP_ID = :1
-            """
-        else:
-            sql = f"""
-                UPDATE {map_table}
-                SET STATUS = NULL,
-                    RETRY_COUNT = 0,
-                    BATCH_CNT = 0,
-                    MIG_SQL = NULL,
-                    VERIFY_SQL = NULL,
-                    USER_EDITED = 'N',
-                    UPD_TS = CURRENT_TIMESTAMP
-                WHERE MAP_ID = :1
-            """
+        sql = f"""
+            UPDATE {map_table}
+            SET STATUS = NULL,
+                RETRY_COUNT = 0,
+                BATCH_CNT = 0,
+                UPD_TS = CURRENT_TIMESTAMP
+            WHERE MAP_ID = :1
+        """
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute(sql, [map_id])
             rowcount = cur.rowcount
             conn.commit()
-        self._write_log(map_id, "RESET", "INFO", "RESET", "PASS", f"Job reset. preserve_user_sql={preserve_user_sql}")
+        self._write_log(map_id, "RESET", "INFO", "RESET", "PASS", "Job reset. SQL values preserved.")
         return {"ok": rowcount > 0, "map_id": map_id, "updated_rows": rowcount}
 
     def _save_user_sql(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
         map_id = self._require_map_id(map_id)
+        if not self._as_bool(command.get("confirm", False)):
+            return {
+                "ok": False,
+                "map_id": map_id,
+                "status": "CONFIRM_REQUIRED",
+                "error": "save_user_sql requires confirm=true because it changes DB state and sets USER_EDITED=Y.",
+            }
         mig_sql = command.get("mig_sql") or ""
         verify_sql = command.get("verify_sql") or ""
         if not str(mig_sql).strip():
@@ -622,6 +613,8 @@ class MigrationCommandTool(Component):
             return {"ok": False, "map_id": map_id, "error": "job not found"}
 
         force_regenerate = self._as_bool(command.get("force_regenerate", False))
+        internal_run = self._as_bool(command.get("_internal_run", False))
+        save = internal_run
         user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
         existing_mig_sql = str(job.get("mig_sql") or "").strip()
         if user_edited and not force_regenerate:
@@ -645,28 +638,19 @@ class MigrationCommandTool(Component):
         if not details:
             return {"ok": False, "map_id": map_id, "error": "No mapping details found"}
 
-        deterministic_sql = self._build_migration_sql(job, details)
-        use_llm = self._as_bool(command.get("use_llm", True))
-        fallback = self._as_bool(command.get("fallback_to_deterministic", True))
-        generation_source = "deterministic"
-        mig_sql = deterministic_sql
+        generation_source = "llm"
         llm_error = ""
 
-        if use_llm:
-            try:
-                prompt = self._migration_sql_prompt(job, details, deterministic_sql)
-                mig_sql = self._sanitize_migration_sql(
-                    self._extract_sql(self._call_llm(prompt), expected="insert", key="migration_sql")
-                )
-                generation_source = "llm"
-            except Exception as exc:
-                llm_error = str(exc)
-                if not fallback:
-                    return {"ok": False, "map_id": map_id, "error": llm_error, "fallback_sql": deterministic_sql}
+        try:
+            prompt = self._migration_sql_prompt(job, details)
+            mig_sql = self._sanitize_migration_sql(
+                self._extract_sql(self._call_llm(prompt), expected="insert", key="migration_sql")
+            )
+        except Exception as exc:
+            llm_error = str(exc)
+            return {"ok": False, "map_id": map_id, "error": llm_error, "generation_source": generation_source}
 
-        if generation_source != "llm":
-            mig_sql = self._sanitize_migration_sql(mig_sql)
-        if self._as_bool(command.get("save", True)):
+        if save:
             self._save_mig_sql(map_id, mig_sql)
             self._write_log(
                 map_id,
@@ -694,6 +678,8 @@ class MigrationCommandTool(Component):
             return {"ok": False, "map_id": map_id, "error": "job not found"}
 
         force_regenerate = self._as_bool(command.get("force_regenerate", False))
+        internal_run = self._as_bool(command.get("_internal_run", False))
+        save = internal_run
         user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
         existing_mig_sql = str(job.get("mig_sql") or "").strip()
         existing_verify_sql = str(job.get("verify_sql") or "").strip()
@@ -716,28 +702,19 @@ class MigrationCommandTool(Component):
             return {"ok": False, "map_id": map_id, "status": final_status, "message": dep["message"]}
 
         details = self._load_details(map_id)
-        deterministic_sql = self._build_verify_sql(job)
-        use_llm = self._as_bool(command.get("use_llm", True))
-        fallback = self._as_bool(command.get("fallback_to_deterministic", True))
-        generation_source = "deterministic"
-        verify_sql = deterministic_sql
+        generation_source = "llm"
         llm_error = ""
 
-        if use_llm:
-            try:
-                prompt = self._verify_sql_prompt(job, details, deterministic_sql)
-                verify_sql = self._sanitize_verify_sql(
-                    self._extract_sql(self._call_llm(prompt), expected="select", key="verification_sql")
-                )
-                generation_source = "llm"
-            except Exception as exc:
-                llm_error = str(exc)
-                if not fallback:
-                    return {"ok": False, "map_id": map_id, "error": llm_error, "fallback_sql": deterministic_sql}
+        try:
+            prompt = self._verify_sql_prompt(job, details)
+            verify_sql = self._sanitize_verify_sql(
+                self._extract_sql(self._call_llm(prompt), expected="select", key="verification_sql")
+            )
+        except Exception as exc:
+            llm_error = str(exc)
+            return {"ok": False, "map_id": map_id, "error": llm_error, "generation_source": generation_source}
 
-        if generation_source != "llm":
-            verify_sql = self._sanitize_verify_sql(verify_sql)
-        if self._as_bool(command.get("save", True)):
+        if save:
             self._save_verify_sql(map_id, verify_sql)
             self._write_log(
                 map_id,
@@ -758,149 +735,21 @@ class MigrationCommandTool(Component):
             "verify_sql": verify_sql,
         }
 
-    def _execute_mig_sql_action(self, map_id: Any) -> dict[str, Any]:
-        map_id = self._require_map_id(map_id)
-        started = time.perf_counter()
-        job = self._load_job(map_id)
-        if not job:
-            return {"ok": False, "map_id": map_id, "error": "job not found"}
-        if str(job.get("use_yn") or "").upper() != "Y":
-            return {"ok": False, "map_id": map_id, "status": "SKIP", "error": "USE_YN is not Y"}
-
-        dep = self._check_dependencies(job)
-        if dep["status"] != "READY":
-            final_status = "SKIP" if dep["status"] == "FAIL" else "WAITING"
-            if final_status == "SKIP":
-                self._update_job_status(map_id, "SKIP", 0, int(job.get("retry_count") or 0))
-            self._write_log(map_id, "DEPENDENCY", "WARN", "DEP_CHECK", final_status, dep["message"])
-            return {"ok": False, "map_id": map_id, "status": final_status, "message": dep["message"]}
-
-        retry_count = int(job.get("retry_count") or 0)
-        mig_sql = ""
-        try:
-            mig_sql = self._sanitize_migration_sql(str(job.get("mig_sql") or ""))
-            if str(job.get("trunc_yn") or "").upper() == "Y":
-                self._truncate_target(job)
-                self._write_log(map_id, "EXECUTE_SQL", "INFO", "TRUNCATE", "PASS", "Target table truncated", retry_count)
-
-            affected_rows = self._execute_sql_script(mig_sql)
-            elapsed = int(time.perf_counter() - started)
-            self._update_job_status(map_id, "SUCCESS-MIG", elapsed, retry_count)
-            self._write_log(
-                map_id,
-                "EXECUTE_SQL",
-                "INFO",
-                "SQL_EXEC",
-                "SUCCESS-MIG",
-                f"Migration SQL executed. affected_rows={affected_rows}",
-                retry_count,
-                mig_sql,
-            )
-            return {
-                "ok": True,
-                "map_id": map_id,
-                "status": "SUCCESS-MIG",
-                "message": "Migration SQL executed",
-                "affected_rows": affected_rows,
-                "elapsed_seconds": elapsed,
-            }
-        except Exception as exc:
-            elapsed = int(time.perf_counter() - started)
-            retry_count += 1
-            self._update_job_status(map_id, "FAIL-INSERT", elapsed, retry_count)
-            self._write_log(
-                map_id,
-                "ROW_ERROR",
-                "ERROR",
-                "SQL_EXEC",
-                "FAIL-INSERT",
-                str(exc)[:3900],
-                retry_count,
-                mig_sql,
-            )
-            return {
-                "ok": False,
-                "map_id": map_id,
-                "status": "FAIL-INSERT",
-                "error": str(exc),
-                "elapsed_seconds": elapsed,
-                "retry_count": retry_count,
-            }
-
-    def _execute_verify_sql_action(self, map_id: Any) -> dict[str, Any]:
-        map_id = self._require_map_id(map_id)
-        started = time.perf_counter()
-        job = self._load_job(map_id)
-        if not job:
-            return {"ok": False, "map_id": map_id, "error": "job not found"}
-
-        retry_count = int(job.get("retry_count") or 0)
-        verify_sql = ""
-        try:
-            verify_sql = self._sanitize_verify_sql(str(job.get("verify_sql") or ""))
-            verify_ok, verify_message, rows = self._execute_verify_sql_with_rows(verify_sql)
-            elapsed = int(time.perf_counter() - started)
-            final_status = "PASS" if verify_ok else "FAIL-TEST"
-            self._update_job_status(map_id, final_status, elapsed, retry_count)
-            self._write_log(
-                map_id,
-                "VERIFY_SQL",
-                "INFO" if verify_ok else "ERROR",
-                "VERIFY",
-                final_status,
-                verify_message,
-                retry_count,
-                verify_sql,
-            )
-            return {
-                "ok": verify_ok,
-                "map_id": map_id,
-                "status": final_status,
-                "message": verify_message,
-                "elapsed_seconds": elapsed,
-                "retry_count": retry_count,
-                "result_rows": rows,
-            }
-        except Exception as exc:
-            elapsed = int(time.perf_counter() - started)
-            retry_count += 1
-            self._update_job_status(map_id, "FAIL-TEST", elapsed, retry_count)
-            self._write_log(
-                map_id,
-                "VERIFY_SQL",
-                "ERROR",
-                "VERIFY",
-                "FAIL-TEST",
-                str(exc)[:3900],
-                retry_count,
-                verify_sql,
-            )
-            return {
-                "ok": False,
-                "map_id": map_id,
-                "status": "FAIL-TEST",
-                "error": str(exc),
-                "elapsed_seconds": elapsed,
-                "retry_count": retry_count,
-            }
-
-    def _migration_sql_prompt(self, job: dict[str, Any], details: list[dict[str, Any]], deterministic_sql: str) -> str:
+    def _migration_sql_prompt(self, job: dict[str, Any], details: list[dict[str, Any]]) -> str:
         return self._render_sql_prompt(
             template=self._require_prompt("mig_sql_prompt", "MIG SQL Prompt"),
             job=job,
             details=details,
-            deterministic_sql=deterministic_sql,
         )
 
-    def _verify_sql_prompt(self, job: dict[str, Any], details: list[dict[str, Any]], deterministic_sql: str) -> str:
+    def _verify_sql_prompt(self, job: dict[str, Any], details: list[dict[str, Any]]) -> str:
         return self._render_sql_prompt(
             template=self._require_prompt("verify_sql_prompt", "VERIFY SQL Prompt"),
             job=job,
             details=details,
-            deterministic_sql=deterministic_sql,
         )
 
-    def _render_sql_prompt(self, template: str, job: dict[str, Any], details: list[dict[str, Any]], deterministic_sql: str) -> str:
+    def _render_sql_prompt(self, template: str, job: dict[str, Any], details: list[dict[str, Any]]) -> str:
         to_table = self._qualify_table(job.get("to_table", ""), self.target_schema)
         from_table = self._qualify_source_expression(job.get("fr_table", ""))
         mapping_info = self._format_mapping_info(details)
@@ -912,7 +761,6 @@ class MigrationCommandTool(Component):
             to_table=to_table,
             mapping_info=mapping_info,
             condition=str(job.get("condition") or "").strip(),
-            deterministic_sql=deterministic_sql,
         )
 
     def _replace_prompt_vars(self, template: str, **values: str) -> str:
@@ -1082,7 +930,6 @@ class MigrationCommandTool(Component):
         map_id = self._require_map_id(map_id)
         started = time.perf_counter()
         max_attempts = max(1, int(command.get("max_attempts") or self.default_max_attempts or 1))
-        force_rerun = bool(command.get("force_rerun", False))
 
         job = self._load_job(map_id)
         if not job:
@@ -1091,8 +938,16 @@ class MigrationCommandTool(Component):
         if str(job.get("use_yn") or "").upper() != "Y":
             return {"ok": False, "map_id": map_id, "status": "SKIP", "error": "USE_YN is not Y"}
 
-        if job.get("status") == "PASS" and not force_rerun:
+        current_status = str(job.get("status") or "").strip().upper()
+        if current_status == "PASS":
             return {"ok": True, "map_id": map_id, "status": "PASS", "message": "Job already passed"}
+        if current_status:
+            return {
+                "ok": False,
+                "map_id": map_id,
+                "status": current_status,
+                "error": "Full migration is allowed only when STATUS is NULL.",
+            }
 
         dep = self._check_dependencies(job)
         if dep["status"] != "READY":
@@ -1102,107 +957,136 @@ class MigrationCommandTool(Component):
             self._write_log(map_id, "DEPENDENCY", "WARN", "DEP_CHECK", final_status, dep["message"])
             return {"ok": final_status == "WAITING", "map_id": map_id, "status": final_status, "message": dep["message"]}
 
-        details = self._load_details(map_id)
-        if not details:
-            self._update_job_status(map_id, "FAIL", 0, 0)
-            return {"ok": False, "map_id": map_id, "status": "FAIL", "error": "No mapping details found"}
+        steps: list[dict[str, Any]] = []
 
-        self._increment_batch_count(map_id)
-        last_error = ""
-        retry_count = 0
-        current_mig_sql = ""
-        current_verify_sql = ""
+        try:
+            job = self._load_job(map_id) or job
+            user_edited = str(job.get("user_edited") or "").upper() == "Y"
 
-        for attempt in range(1, max_attempts + 1):
-            retry_count = attempt - 1
-            try:
+            self._increment_batch_count(map_id)
+            generation_command = {
+                "force_regenerate": command.get("force_regenerate", False),
+                "_internal_run": True,
+            }
+            last_failure: dict[str, Any] = {}
+            mig_executed = False
+            last_retry_count = 0
+
+            for attempt in range(1, max_attempts + 1):
+                retry_count = attempt - 1
+                last_retry_count = retry_count
                 job = self._load_job(map_id) or job
                 user_edited = str(job.get("user_edited") or "").upper() == "Y"
-                if user_edited:
-                    current_mig_sql = str(job.get("mig_sql") or "").strip()
-                    current_verify_sql = str(job.get("verify_sql") or "").strip()
-                    if not current_mig_sql:
-                        raise ValueError("USER_EDITED=Y but MIG_SQL is empty")
-                    if not current_verify_sql:
-                        current_verify_sql = self._build_verify_sql(job)
-                        self._save_generated_sql(map_id, current_mig_sql, current_verify_sql)
+
+                if not mig_executed:
+                    if user_edited:
+                        mig_sql = str(job.get("mig_sql") or "").strip()
+                        if not mig_sql:
+                            raise ValueError("USER_EDITED=Y but MIG_SQL is empty")
+                        steps.append({"step": "generate_mig_sql", "attempt": attempt, "status": "SKIPPED_USER_EDITED"})
+                    else:
+                        mig_result = self._generate_mig_sql(map_id, generation_command)
+                        steps.append({"step": "generate_mig_sql", "attempt": attempt, **self._summary_result(mig_result)})
+                        if not mig_result.get("ok"):
+                            last_failure = {"status": "FAIL-INSERT", "error": mig_result.get("error") or "MIG_SQL generation failed"}
+                            self._write_retry_log(map_id, "GENERATE_MIG_SQL", "FAIL-INSERT", str(last_failure["error"]), retry_count)
+                            if attempt < max_attempts:
+                                continue
+                            break
+
+                    job = self._load_job(map_id) or job
+                    try:
+                        mig_exec_result = self._execute_mig_sql_once(job, retry_count)
+                        steps.append({"step": "execute_mig_sql", "attempt": attempt, **self._summary_result(mig_exec_result)})
+                        mig_executed = True
+                    except Exception as exc:
+                        last_failure = {"status": "FAIL-INSERT", "error": str(exc)}
+                        steps.append({"step": "execute_mig_sql", "attempt": attempt, "ok": False, **last_failure})
+                        self._write_retry_log(map_id, "SQL_EXEC", "FAIL-INSERT", str(exc), retry_count, str(job.get("mig_sql") or ""))
+                        if attempt < max_attempts:
+                            continue
+                        break
+
+                job = self._load_job(map_id) or job
+                user_edited = str(job.get("user_edited") or "").upper() == "Y"
+                verify_sql = str(job.get("verify_sql") or "").strip()
+                if user_edited and verify_sql:
+                    steps.append({"step": "generate_verify_sql", "attempt": attempt, "status": "SKIPPED_USER_EDITED"})
                 else:
-                    current_mig_sql = self._build_migration_sql(job, details)
-                    current_verify_sql = self._build_verify_sql(job)
-                    self._save_generated_sql(map_id, current_mig_sql, current_verify_sql)
+                    verify_result = self._generate_verify_sql(map_id, generation_command)
+                    steps.append({"step": "generate_verify_sql", "attempt": attempt, **self._summary_result(verify_result)})
+                    if not verify_result.get("ok"):
+                        last_failure = {"status": "FAIL-TEST", "error": verify_result.get("error") or "VERIFY_SQL generation failed"}
+                        self._write_retry_log(map_id, "GENERATE_VERIFY_SQL", "FAIL-TEST", str(last_failure["error"]), retry_count)
+                        if attempt < max_attempts:
+                            continue
+                        break
 
-                self._write_log(
-                    map_id,
-                    "GENERATE_SQL",
-                    "INFO",
-                    "GENERATE",
-                    "PASS",
-                    f"Migration SQL prepared. attempt={attempt}",
-                    retry_count=retry_count,
-                    generate_sql=current_mig_sql,
-                )
+                job = self._load_job(map_id) or job
+                try:
+                    verify_exec_result = self._execute_verify_sql_once(job)
+                    steps.append({"step": "execute_verify_sql", "attempt": attempt, **self._summary_result(verify_exec_result)})
+                    if verify_exec_result.get("ok"):
+                        elapsed = int(time.perf_counter() - started)
+                        self._update_job_status(map_id, "PASS", elapsed, retry_count)
+                        self._write_log(map_id, "VERIFY_SQL", "INFO", "VERIFY", "PASS", "Migration Success", retry_count, verify_exec_result.get("verify_sql"))
+                        return {
+                            "ok": True,
+                            "map_id": map_id,
+                            "status": "PASS",
+                            "message": "Migration completed",
+                            "elapsed_seconds": elapsed,
+                            "retry_count": retry_count,
+                            "steps": steps,
+                        }
 
-                if not user_edited and not bool(self.allow_generated_sql_execution):
-                    return {
-                        "ok": True,
-                        "map_id": map_id,
-                        "status": "SQL_GENERATED",
-                        "message": "Generated SQL saved. Execution skipped because allow_generated_sql_execution=false.",
-                        "mig_sql": current_mig_sql,
-                        "verify_sql": current_verify_sql,
-                    }
+                    last_failure = {"status": "FAIL-TEST", "error": verify_exec_result.get("message") or "Verification failed"}
+                    self._write_retry_log(map_id, "VERIFY", "FAIL-TEST", str(last_failure["error"]), retry_count, verify_exec_result.get("verify_sql"))
+                    if attempt < max_attempts:
+                        continue
+                    break
+                except Exception as exc:
+                    last_failure = {"status": "FAIL-TEST", "error": str(exc)}
+                    steps.append({"step": "execute_verify_sql", "attempt": attempt, "ok": False, **last_failure})
+                    self._write_retry_log(map_id, "VERIFY", "FAIL-TEST", str(exc), retry_count, str(job.get("verify_sql") or ""))
+                    if attempt < max_attempts:
+                        continue
+                    break
 
-                if str(job.get("trunc_yn") or "").upper() == "Y":
-                    self._truncate_target(job)
-
-                self._execute_sql_script(current_mig_sql)
-                self._write_log(map_id, "EXECUTE_SQL", "INFO", "SQL_EXEC", "PASS", "Migration SQL executed", retry_count)
-
-                verify_ok, verify_message = self._execute_verify_sql(current_verify_sql)
-                if not verify_ok:
-                    raise RuntimeError(f"Verification failed: {verify_message}")
-
-                elapsed = int(time.perf_counter() - started)
-                self._update_job_status(map_id, "PASS", elapsed, retry_count)
-                self._write_log(map_id, "VERIFY_SQL", "INFO", "VERIFY", "PASS", verify_message, retry_count, current_verify_sql)
-                return {
-                    "ok": True,
-                    "map_id": map_id,
-                    "status": "PASS",
-                    "message": "Migration completed",
-                    "elapsed_seconds": elapsed,
-                    "retry_count": retry_count,
-                    "mig_sql": current_mig_sql,
-                    "verify_sql": current_verify_sql,
-                }
-            except Exception as exc:
-                last_error = str(exc)
-                failure_status = self._classify_failure(last_error)
-                self._write_log(
-                    map_id,
-                    "ROW_ERROR",
-                    "WARN",
-                    "RETRY" if attempt < max_attempts else "FINAL",
-                    failure_status,
-                    last_error[:3900],
-                    retry_count,
-                    current_verify_sql if failure_status == "FAIL-TEST" else current_mig_sql,
-                )
-                if attempt >= max_attempts:
-                    elapsed = int(time.perf_counter() - started)
-                    self._update_job_status(map_id, failure_status, elapsed, retry_count)
-                    return {
-                        "ok": False,
-                        "map_id": map_id,
-                        "status": failure_status,
-                        "error": last_error,
-                        "elapsed_seconds": elapsed,
-                        "retry_count": retry_count,
-                        "mig_sql": current_mig_sql,
-                        "verify_sql": current_verify_sql,
-                    }
-
-        return {"ok": False, "map_id": map_id, "status": "FAIL", "error": last_error}
+            final_status = str(last_failure.get("status") or "FAIL")
+            elapsed = int(time.perf_counter() - started)
+            self._update_job_status(map_id, final_status, elapsed, last_retry_count)
+            self._write_log(
+                map_id,
+                "JOB_FAIL",
+                "ERROR",
+                "FINAL",
+                final_status,
+                str(last_failure.get("error") or "Max attempts reached")[:3900],
+                last_retry_count,
+                str((self._load_job(map_id) or {}).get("verify_sql" if final_status == "FAIL-TEST" else "mig_sql") or ""),
+            )
+            return {
+                "ok": False,
+                "map_id": map_id,
+                "status": final_status,
+                "error": last_failure.get("error") or "Max attempts reached",
+                "elapsed_seconds": elapsed,
+                "retry_count": last_retry_count,
+                "steps": steps,
+            }
+        except Exception as exc:
+            elapsed = int(time.perf_counter() - started)
+            self._update_job_status(map_id, "FAIL", elapsed, int(job.get("retry_count") or 0))
+            self._write_log(map_id, "ROW_ERROR", "ERROR", "RUN_FULL", "FAIL", str(exc)[:3900])
+            return {
+                "ok": False,
+                "map_id": map_id,
+                "status": "FAIL",
+                "error": str(exc),
+                "elapsed_seconds": elapsed,
+                "steps": steps,
+            }
 
     def _load_job(self, map_id: int) -> dict[str, Any] | None:
         map_table = self._system_table("NEXT_MIG_INFO")
@@ -1274,32 +1158,6 @@ class MigrationCommandTool(Component):
             return {"status": prior_status or "PENDING", "message": f"Prior MAP_ID={prior_map_id} status={prior_status or 'NULL'}"}
         return {"status": "READY", "message": "Prior dependency passed"}
 
-    def _build_migration_sql(self, job: dict[str, Any], details: list[dict[str, Any]]) -> str:
-        to_table = self._qualify_table(job["to_table"], self.target_schema)
-        fr_expr = self._qualify_source_expression(job["fr_table"])
-        condition = str(job.get("condition") or "").strip()
-        usable_details = [d for d in details if str(d.get("to_col") or "").strip()]
-        if not usable_details:
-            raise ValueError("No usable target columns found. All TO_COL values are empty.")
-        target_cols = ", ".join(self._quote_identifier(d["to_col"]) for d in usable_details)
-        source_cols = ", ".join(d["fr_col"] for d in usable_details)
-        where_clause = f"\nWHERE {condition}" if condition else ""
-        return f"INSERT INTO {to_table} ({target_cols})\nSELECT {source_cols}\nFROM {fr_expr}{where_clause}"
-
-    def _build_verify_sql(self, job: dict[str, Any]) -> str:
-        to_table = self._qualify_table(job["to_table"], self.target_schema)
-        fr_expr = self._qualify_source_expression(job["fr_table"])
-        condition = str(job.get("condition") or "").strip()
-        source_where = f" WHERE {condition}" if condition else ""
-        return (
-            "SELECT ABS((SELECT COUNT(*) FROM "
-            + fr_expr
-            + source_where
-            + ") - (SELECT COUNT(*) FROM "
-            + to_table
-            + ")) AS DIFF FROM DUAL"
-        )
-
     def _save_mig_sql(self, map_id: int, mig_sql: str) -> None:
         map_table = self._system_table("NEXT_MIG_INFO")
         with self._connect() as conn:
@@ -1345,6 +1203,83 @@ class MigrationCommandTool(Component):
                 [mig_sql, verify_sql, map_id],
             )
             conn.commit()
+
+    def _execute_mig_sql_once(self, job: dict[str, Any], retry_count: int) -> dict[str, Any]:
+        map_id = int(job["map_id"])
+        mig_sql = self._sanitize_migration_sql(str(job.get("mig_sql") or ""))
+        if str(job.get("trunc_yn") or "").upper() == "Y":
+            self._truncate_target(job)
+            self._write_log(map_id, "EXECUTE_SQL", "INFO", "TRUNCATE", "PASS", "Target table truncated", retry_count)
+        affected_rows = self._execute_sql_script(mig_sql)
+        return {
+            "ok": True,
+            "map_id": map_id,
+            "status": "SUCCESS-MIG",
+            "message": "Migration SQL executed",
+            "affected_rows": affected_rows,
+            "mig_sql": mig_sql,
+        }
+
+    def _execute_verify_sql_once(self, job: dict[str, Any]) -> dict[str, Any]:
+        map_id = int(job["map_id"])
+        verify_sql = self._sanitize_verify_sql(str(job.get("verify_sql") or ""))
+        verify_ok, verify_message, rows = self._execute_verify_sql_with_rows(verify_sql)
+        return {
+            "ok": verify_ok,
+            "map_id": map_id,
+            "status": "PASS" if verify_ok else "FAIL-TEST",
+            "message": verify_message,
+            "verify_sql": verify_sql,
+            "result_rows": rows,
+        }
+
+    def _summary_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        summary = {
+            "ok": bool(result.get("ok")),
+            "status": result.get("status"),
+        }
+        for key in ["message", "error", "generation_source", "affected_rows", "elapsed_seconds", "retry_count"]:
+            if key in result:
+                summary[key] = result.get(key)
+        return summary
+
+    def _finalize_full_run(
+        self,
+        map_id: int,
+        started: float,
+        status: str,
+        steps: list[dict[str, Any]],
+        failed_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        elapsed = int(time.perf_counter() - started)
+        return {
+            "ok": False,
+            "map_id": map_id,
+            "status": failed_result.get("status") or status,
+            "error": failed_result.get("error") or failed_result.get("message") or "Migration failed",
+            "elapsed_seconds": elapsed,
+            "steps": steps,
+        }
+
+    def _write_retry_log(
+        self,
+        map_id: int,
+        step_name: str,
+        status: str,
+        message: str,
+        retry_count: int,
+        generate_sql: str | None = None,
+    ) -> None:
+        self._write_log(
+            map_id,
+            "ROW_ERROR",
+            "WARN",
+            "RETRY" if retry_count > 0 else step_name,
+            status,
+            str(message or "")[:3900],
+            retry_count,
+            generate_sql,
+        )
 
     def _truncate_target(self, job: dict[str, Any]) -> None:
         target = self._qualify_table(job["to_table"], self.target_schema)

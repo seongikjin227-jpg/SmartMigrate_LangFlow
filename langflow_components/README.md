@@ -27,14 +27,6 @@ Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코�
 ```
 
 ```json
-{"action":"execute_mig_sql","map_id":101}
-```
-
-```json
-{"action":"execute_verify_sql","map_id":101}
-```
-
-```json
 {"action":"run_migration_job","map_id":101}
 ```
 
@@ -46,14 +38,12 @@ Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코�
 | `list_pending` | 대기 중인 migration job 목록 조회 |
 | `status` | 특정 map_id 상태/상세 매핑 조회 |
 | `get_table_ddl` | `USER_TAB_COLUMNS` 또는 `ALL_TAB_COLUMNS` 기반 테이블 컬럼 메타 조회 |
-| `generate_mig_sql` | LLM 또는 deterministic 방식으로 MIG_SQL 생성 후 저장 |
-| `generate_verify_sql` | LLM 또는 deterministic 방식으로 VERIFY_SQL 생성 후 저장 |
-| `execute_mig_sql` | 저장된 MIG_SQL 실행 후 성공 시 `SUCCESS-MIG` 상태 저장 |
-| `execute_verify_sql` | 저장된 VERIFY_SQL 실행 후 검증 성공 시 `PASS`, 실패 시 `FAIL-TEST` 저장 |
-| `reset` | 특정 map_id 재실행 가능 상태로 초기화 |
-| `save_user_sql` | 사용자가 수정한 MIG_SQL/VERIFY_SQL 저장 |
+| `generate_mig_sql` | LLM으로 MIG_SQL preview 생성, DB 저장 없음 |
+| `generate_verify_sql` | LLM으로 VERIFY_SQL preview 생성, DB 저장 없음 |
+| `reset` | 특정 map_id의 `STATUS`, `RETRY_COUNT`, `BATCH_CNT`를 초기화, SQL은 보존, `confirm=true` 필요 |
+| `save_user_sql` | 사용자가 수정한 MIG_SQL/VERIFY_SQL 저장, `confirm=true` 필요 |
 | `analyze_failure` | 최근 실패 로그와 저장 SQL 조회 |
-| `run_migration_job` | 매핑 정보 기반 SQL 생성, 실행, 검증, 상태 저장 |
+| `run_migration_job` | LLM SQL 생성, 저장, 실행, 검증, 상태 저장 전체 사이클 |
 
 ## SQL 생성 command
 
@@ -69,27 +59,8 @@ VERIFY_SQL 생성:
 {"action":"generate_verify_sql","map_id":101}
 ```
 
-기본값:
-
-```json
-{
-  "use_llm": true,
-  "save": true,
-  "fallback_to_deterministic": true
-}
-```
-
-LLM 생성 실패 시 deterministic SQL로 fallback하지 않고 실패시키려면:
-
-```json
-{"action":"generate_mig_sql","map_id":101,"fallback_to_deterministic":false}
-```
-
-DB에 저장하지 않고 미리보기만 하려면:
-
-```json
-{"action":"generate_verify_sql","map_id":101,"save":false}
-```
+`generate_mig_sql`, `generate_verify_sql`은 preview 전용이다. DB에 SQL을 저장하지 않고 생성 결과만 반환한다.
+LLM 생성이 실패하면 fallback 없이 실패한다.
 
 사용자 수정 SQL 보호 정책:
 
@@ -108,7 +79,7 @@ DB에 저장하지 않고 미리보기만 하려면:
 
 중요 정책:
 
-- `generate_mig_sql`, `generate_verify_sql`은 `USER_EDITED` 값을 변경하지 않는다.
+- `generate_mig_sql`, `generate_verify_sql`은 DB를 업데이트하지 않고 `USER_EDITED` 값도 변경하지 않는다.
 - `USER_EDITED=Y`는 `save_user_sql`로 사용자가 직접 수정 SQL을 저장할 때만 설정한다.
 - `PRIOR_MAP_ID`가 있고 선행 작업이 `PASS`가 아니면 SQL 생성도 진행하지 않는다.
 - `NEXT_MIG_INFO_DTL.TO_COL`이 비어 있는 매핑은 target insert 컬럼에서 제외한다. 이 값은 스킵되었거나 다른 expression에 합쳐진 컬럼으로 본다.
@@ -120,53 +91,56 @@ DB에 저장하지 않고 미리보기만 하려면:
 
 프롬프트 input에 넣을 텍스트는 `langflow/06_migration_prompt_inputs.md`를 참고한다.
 
-## SQL 실행 command
-
-저장된 MIG_SQL 실행:
-
-```json
-{"action":"execute_mig_sql","map_id":101}
-```
-
-동작:
-
-- `USE_YN=Y`인지 확인한다.
-- `PRIOR_MAP_ID`가 있으면 선행 작업이 `PASS`인지 확인한다.
-- `MIG_SQL`은 단일 `INSERT` 문만 허용한다.
-- `TRUNC_YN=Y`이면 target table을 먼저 truncate한다. 단, `MIG_SQL` 컬럼에는 truncate SQL을 저장하지 않는다.
-- 성공 시 `NEXT_MIG_INFO.STATUS='SUCCESS-MIG'`로 업데이트한다.
-- 실패 시 `NEXT_MIG_INFO.STATUS='FAIL-INSERT'`로 업데이트한다.
-
-저장된 VERIFY_SQL 실행:
-
-```json
-{"action":"execute_verify_sql","map_id":101}
-```
-
-동작:
-
-- `VERIFY_SQL`은 단일 `SELECT` 또는 `WITH` 문만 허용한다.
-- 결과 row의 모든 값이 0이면 `PASS`로 업데이트한다.
-- 하나라도 0이 아니면 `FAIL-TEST`로 업데이트한다.
-- 실행 결과는 `result_rows`에 같이 반환한다.
-
 ## 현재 run_migration_job 동작
 
-이 버전은 LLM으로 SQL을 만들지 않는다. `NEXT_MIG_INFO_DTL` 매핑을 기준으로 deterministic SQL을 만든다.
+`run_migration_job`은 LLM 기반 전체 migration 사이클을 실행한다.
 
-```sql
-INSERT INTO TO_TABLE (TO_COL...)
-SELECT FR_COL...
-FROM FR_TABLE
+```json
+{"action":"run_migration_job","map_id":101}
 ```
 
-검증 SQL은 source count와 target count 차이가 0인지 확인한다.
+실행 순서:
 
-```sql
-SELECT ABS((SELECT COUNT(*) FROM source) - (SELECT COUNT(*) FROM target)) AS DIFF FROM DUAL
+1. job 상태, `USE_YN`, `PRIOR_MAP_ID` 확인
+2. `USER_EDITED=Y`이면 기존 `MIG_SQL` 보존
+3. `USER_EDITED!=Y`이면 `generate_mig_sql` 실행
+4. 내부 실행 helper로 `MIG_SQL` 실행
+5. `USER_EDITED=Y`이고 `VERIFY_SQL`이 있으면 기존 SQL 보존
+6. 그 외에는 `generate_verify_sql` 실행
+7. 내부 검증 helper로 `VERIFY_SQL` 실행
+8. 실패 시 DB `STATUS`를 바로 저장하지 않고 retry loop 내부에서 재생성/재실행
+9. 최종 성공/실패가 확정되면 `PASS`, `FAIL-INSERT`, `FAIL-TEST`를 DB에 저장
+
+Retry 정책:
+
+- 내부 retry는 `run_migration_job`에서만 수행한다.
+- 개별 preview action인 `generate_mig_sql`, `generate_verify_sql`은 retry 없이 1회만 수행한다.
+- retry 중간 실패는 `NEXT_MIG_LOG`에 `ROW_ERROR`로 기록한다.
+- retry 중간에는 `NEXT_MIG_INFO.STATUS`를 업데이트하지 않는다.
+- 최대 시도 초과 또는 최종 성공 시에만 `NEXT_MIG_INFO.STATUS`와 `RETRY_COUNT`를 저장한다.
+- `FAIL-INSERT`이면 다음 attempt에서 `MIG_SQL`을 다시 생성하고 다시 실행한다.
+- `FAIL-TEST`이면 `MIG_SQL`은 다시 실행하지 않고 `VERIFY_SQL`만 다시 생성하고 검증한다.
+
+LLM 생성이 실패하면 전체 migration은 중단된다. fallback SQL 생성은 사용하지 않는다.
+
+## 확인이 필요한 DB 변경 command
+
+사용자 수정 SQL 저장:
+
+```json
+{"action":"save_user_sql","map_id":101,"mig_sql":"INSERT ...","verify_sql":"SELECT ...","confirm":true}
 ```
 
-LLM 기반 SQL 생성은 이 deterministic 실행이 검증된 다음 별도 확장하는 것을 권장한다.
+`confirm=true`가 없으면 실행하지 않는다. 이 action은 `USER_EDITED='Y'`를 설정한다.
+
+Reset:
+
+```json
+{"action":"reset","map_id":101,"confirm":true}
+```
+
+`confirm=true`가 없으면 실행하지 않는다.
+`reset`은 `MIG_SQL`, `VERIFY_SQL`, `USER_EDITED`를 변경하지 않는다. `STATUS=NULL`, `RETRY_COUNT=0`, `BATCH_CNT=0`만 저장한다.
 
 ## Langflow Tool Mode
 

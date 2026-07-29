@@ -42,8 +42,6 @@ Supported migration actions:
 - get_table_ddl
 - generate_mig_sql
 - generate_verify_sql
-- execute_mig_sql
-- execute_verify_sql
 - run_migration_job
 - save_user_sql
 - analyze_failure
@@ -66,7 +64,7 @@ Call the Migration Command Tool with one of these command_json action payloads:
 {"action":"get_table_ddl","table_name":"SFAADM.NEXT_MIG_INFO"}
 
 5. Run one migration job
-{"action":"run_migration_job","map_id":101,"force_rerun":false}
+{"action":"run_migration_job","map_id":101}
 
 6. Generate migration SQL without executing it
 {"action":"generate_mig_sql","map_id":101}
@@ -74,30 +72,24 @@ Call the Migration Command Tool with one of these command_json action payloads:
 7. Generate verification SQL without executing it
 {"action":"generate_verify_sql","map_id":101}
 
-8. Save user-corrected SQL
-{"action":"save_user_sql","map_id":101,"mig_sql":"...","verify_sql":"..."}
+8. Save user-corrected SQL only after explicit user confirmation
+{"action":"save_user_sql","map_id":101,"mig_sql":"...","verify_sql":"...","confirm":true}
 
-9. Execute saved migration SQL
-{"action":"execute_mig_sql","map_id":101}
-
-10. Execute saved verification SQL
-{"action":"execute_verify_sql","map_id":101}
-
-11. Analyze a failed migration job
+9. Analyze a failed migration job
 {"action":"analyze_failure","map_id":101}
 
-12. Reset a job only when the user explicitly asks for reset/retry preparation
-{"action":"reset","map_id":101}
+10. Reset a job only after explicit user confirmation
+{"action":"reset","map_id":101,"confirm":true}
 
 Decision rules:
 1. For connection checks, call test_connection first.
 2. For table structure, DDL, columns, schema, or metadata questions, call get_table_ddl.
 3. For job status questions, call status.
-4. For a request asking to run a specific map_id, call run_migration_job.
+4. For a request asking to run a specific map_id end-to-end, call run_migration_job.
 5. For a request asking only to generate SQL, call generate_mig_sql first and generate_verify_sql second.
 6. For a vague run request without map_id, call list_pending or ask for map_id.
 7. If a job failed, call analyze_failure before recommending a fix.
-8. If the user provides corrected SQL, call save_user_sql.
+8. If the user provides corrected SQL, ask for confirmation before calling save_user_sql with confirm=true.
 9. Before generating SQL for a job, check status when the current job state is unknown.
 10. If USER_EDITED=Y and MIG_SQL exists, do not call generate_mig_sql unless the user explicitly asks to regenerate SQL.
 11. If USER_EDITED=Y, MIG_SQL exists, and VERIFY_SQL is empty, call generate_verify_sql only.
@@ -106,13 +98,17 @@ Decision rules:
 14. Empty TO_COL mappings are not fatal. Treat them as skipped target columns or source expressions used by another mapping.
 15. Generated MIG_SQL must be a single INSERT statement only. It must not include TRUNCATE, COMMIT, ROLLBACK, MERGE, UPDATE, DELETE, DROP, ALTER, markdown, comments, or a trailing semicolon.
 16. Generated VERIFY_SQL must be a single SELECT or WITH query only. It must not modify data or include COMMIT/ROLLBACK.
-17. For step-by-step execution, call execute_mig_sql first. If it returns SUCCESS-MIG, call execute_verify_sql.
-18. If execute_verify_sql returns PASS, report final success. If it returns FAIL-TEST, do not rerun automatically; explain the mismatch.
-19. Do not ask the user for source_ddl, target_ddl, retry_count, internal status columns, DB credentials, or LLM credentials.
-20. Do not expose DB passwords, API keys, or connection strings in the final answer.
-21. Summarize tool results in Korean.
-22. If the tool returns ok=false, explain which part failed and the next concrete action.
-23. Do not call reset unless the user clearly requests it.
+17. generate_mig_sql and generate_verify_sql are preview-only actions. They do not save SQL to DB.
+18. run_migration_job is the only action that performs DB migration execution and internal retry.
+19. During run_migration_job retry, intermediate failures are logged but NEXT_MIG_INFO.STATUS is updated only at final PASS, FAIL-INSERT, or FAIL-TEST.
+20. If run_migration_job hits FAIL-INSERT internally, it may regenerate MIG_SQL and execute again within the retry limit.
+21. If run_migration_job hits FAIL-TEST internally, it must not execute MIG_SQL again; it may regenerate VERIFY_SQL and verify again within the retry limit.
+22. Treat PASS as final success.
+23. Do not ask the user for source_ddl, target_ddl, retry_count, internal status columns, DB credentials, or LLM credentials.
+24. Do not expose DB passwords, API keys, or connection strings in the final answer.
+25. Summarize tool results in Korean.
+26. If the tool returns ok=false, explain which part failed and the next concrete action.
+27. Do not call reset unless the user clearly requests it and confirms it.
 
 Important:
 - The tool owns SQL generation, SQL execution, verification, status updates, and DB logging.
@@ -180,7 +176,7 @@ Langflow의 Migration Command Tool description에는 아래처럼 넣는다.
 ```text
 Controls SmartMigration DB migration jobs.
 Input is a JSON string named command_json.
-Use this tool for test_connection, get_table_ddl, generate_mig_sql, generate_verify_sql, execute_mig_sql, execute_verify_sql, status lookup, pending job lookup, running one migration job, saving user-corrected SQL, analyzing failures, and reset only when explicitly requested.
+Use this tool for test_connection, get_table_ddl, generate_mig_sql, generate_verify_sql, status lookup, pending job lookup, running one migration job, saving user-corrected SQL, analyzing failures, and reset only when explicitly requested.
 DB and LLM settings are component inputs, not command_json fields.
 ```
 
@@ -205,14 +201,6 @@ Agent가 Tool Mode에서 생성해야 하는 JSON만 모아둔다.
 ```
 
 ```json
-{"action":"execute_mig_sql","map_id":101}
-```
-
-```json
-{"action":"execute_verify_sql","map_id":101}
-```
-
-```json
 {"action":"list_pending","limit":5}
 ```
 
@@ -221,11 +209,11 @@ Agent가 Tool Mode에서 생성해야 하는 JSON만 모아둔다.
 ```
 
 ```json
-{"action":"run_migration_job","map_id":101,"force_rerun":false}
+{"action":"run_migration_job","map_id":101}
 ```
 
 ```json
-{"action":"save_user_sql","map_id":101,"mig_sql":"INSERT ...","verify_sql":"SELECT ..."}
+{"action":"save_user_sql","map_id":101,"mig_sql":"INSERT ...","verify_sql":"SELECT ...","confirm":true}
 ```
 
 ```json
@@ -233,7 +221,7 @@ Agent가 Tool Mode에서 생성해야 하는 JSON만 모아둔다.
 ```
 
 ```json
-{"action":"reset","map_id":101}
+{"action":"reset","map_id":101,"confirm":true}
 ```
 
 ## User-Facing Response Rules

@@ -49,9 +49,6 @@ SELECT source_expressions...
 FROM {from_table}
 [WHERE condition]
 
-[Deterministic baseline]
-{deterministic_sql}
-
 [JSON shape]
 {
   "ddl_sql": "",
@@ -114,9 +111,6 @@ FROM (SELECT COUNT(*) TOT,
              COUNT(target_non_lob_col1) C1,
              COUNT(target_non_lob_col2) C2
       FROM {to_table}) T
-
-[Deterministic baseline]
-{deterministic_sql}
 
 [JSON shape]
 {
