@@ -96,6 +96,20 @@ DB에 저장하지 않고 미리보기만 하려면:
 {"action":"generate_mig_sql","map_id":101,"force_regenerate":true}
 ```
 
+중요 정책:
+
+- `generate_mig_sql`, `generate_verify_sql`은 `USER_EDITED` 값을 변경하지 않는다.
+- `USER_EDITED=Y`는 `save_user_sql`로 사용자가 직접 수정 SQL을 저장할 때만 설정한다.
+- `PRIOR_MAP_ID`가 있고 선행 작업이 `PASS`가 아니면 SQL 생성도 진행하지 않는다.
+- `NEXT_MIG_INFO_DTL.TO_COL`이 비어 있는 매핑은 target insert 컬럼에서 제외한다. 이 값은 스킵되었거나 다른 expression에 합쳐진 컬럼으로 본다.
+- LLM 프롬프트는 파일에서 읽지 않는다. Langflow input인 `mig_sql_prompt`, `verify_sql_prompt` 두 개로 받는다.
+- `MIG_SQL`에 저장되는 값은 단일 `INSERT` 문이어야 한다.
+- `MIG_SQL`에는 `TRUNCATE`, `COMMIT`, `ROLLBACK`, `DELETE`, `UPDATE`, `MERGE`, `DROP`, `ALTER`를 저장하지 않는다.
+- `VERIFY_SQL`에 저장되는 값은 단일 `SELECT` 또는 `WITH` 문이어야 한다.
+- SQL 값 끝의 세미콜론은 제거해서 저장한다.
+
+프롬프트 input에 넣을 텍스트는 `langflow/06_migration_prompt_inputs.md`를 참고한다.
+
 ## 현재 run_migration_job 동작
 
 이 버전은 LLM으로 SQL을 만들지 않는다. `NEXT_MIG_INFO_DTL` 매핑을 기준으로 deterministic SQL을 만든다.

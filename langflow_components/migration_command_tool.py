@@ -93,6 +93,18 @@ class MigrationCommandTool(Component):
             value=4096,
             required=False,
         ),
+        MessageTextInput(
+            name="mig_sql_prompt",
+            display_name="MIG SQL Prompt",
+            required=False,
+            info="Prompt template for generate_mig_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}, {deterministic_sql}.",
+        ),
+        MessageTextInput(
+            name="verify_sql_prompt",
+            display_name="VERIFY SQL Prompt",
+            required=False,
+            info="Prompt template for generate_verify_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}, {deterministic_sql}.",
+        ),
         StrInput(
             name="system_schema",
             display_name="System Schema",
@@ -620,6 +632,11 @@ class MigrationCommandTool(Component):
                 }
             return {"ok": False, "map_id": map_id, "error": "USER_EDITED=Y but MIG_SQL is empty"}
 
+        dep = self._check_dependencies(job)
+        if dep["status"] != "READY":
+            final_status = "SKIP" if dep["status"] == "FAIL" else "WAITING"
+            return {"ok": False, "map_id": map_id, "status": final_status, "message": dep["message"]}
+
         details = self._load_details(map_id)
         if not details:
             return {"ok": False, "map_id": map_id, "error": "No mapping details found"}
@@ -634,13 +651,17 @@ class MigrationCommandTool(Component):
         if use_llm:
             try:
                 prompt = self._migration_sql_prompt(job, details, deterministic_sql)
-                mig_sql = self._extract_sql(self._call_llm(prompt), expected="insert")
+                mig_sql = self._sanitize_migration_sql(
+                    self._extract_sql(self._call_llm(prompt), expected="insert", key="migration_sql")
+                )
                 generation_source = "llm"
             except Exception as exc:
                 llm_error = str(exc)
                 if not fallback:
                     return {"ok": False, "map_id": map_id, "error": llm_error, "fallback_sql": deterministic_sql}
 
+        if generation_source != "llm":
+            mig_sql = self._sanitize_migration_sql(mig_sql)
         if self._as_bool(command.get("save", True)):
             self._save_mig_sql(map_id, mig_sql)
             self._write_log(
@@ -685,6 +706,11 @@ class MigrationCommandTool(Component):
                     "verify_sql": existing_verify_sql,
                 }
 
+        dep = self._check_dependencies(job)
+        if dep["status"] != "READY":
+            final_status = "SKIP" if dep["status"] == "FAIL" else "WAITING"
+            return {"ok": False, "map_id": map_id, "status": final_status, "message": dep["message"]}
+
         details = self._load_details(map_id)
         deterministic_sql = self._build_verify_sql(job)
         use_llm = self._as_bool(command.get("use_llm", True))
@@ -696,13 +722,17 @@ class MigrationCommandTool(Component):
         if use_llm:
             try:
                 prompt = self._verify_sql_prompt(job, details, deterministic_sql)
-                verify_sql = self._extract_sql(self._call_llm(prompt), expected="select")
+                verify_sql = self._sanitize_verify_sql(
+                    self._extract_sql(self._call_llm(prompt), expected="select", key="verification_sql")
+                )
                 generation_source = "llm"
             except Exception as exc:
                 llm_error = str(exc)
                 if not fallback:
                     return {"ok": False, "map_id": map_id, "error": llm_error, "fallback_sql": deterministic_sql}
 
+        if generation_source != "llm":
+            verify_sql = self._sanitize_verify_sql(verify_sql)
         if self._as_bool(command.get("save", True)):
             self._save_verify_sql(map_id, verify_sql)
             self._write_log(
@@ -725,47 +755,87 @@ class MigrationCommandTool(Component):
         }
 
     def _migration_sql_prompt(self, job: dict[str, Any], details: list[dict[str, Any]], deterministic_sql: str) -> str:
-        payload = {
-            "task": "Generate Oracle migration INSERT SELECT SQL only.",
-            "rules": [
-                "Return only executable SQL. Do not include markdown fences or explanations.",
-                "Generate a single INSERT INTO ... SELECT ... statement.",
-                "Do not execute SQL.",
-                "Preserve the target column order from mapping_details.",
-                "Use Oracle SQL syntax.",
-            ],
-            "job": {
-                "map_id": job.get("map_id"),
-                "map_type": job.get("map_type"),
-                "source_table_expression": self._qualify_source_expression(job.get("fr_table", "")),
-                "target_table": self._qualify_table(job.get("to_table", ""), self.target_schema),
-                "condition": job.get("condition"),
-            },
-            "mapping_details": details,
-            "baseline_sql": deterministic_sql,
-        }
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        return self._render_sql_prompt(
+            template=self._require_prompt("mig_sql_prompt", "MIG SQL Prompt"),
+            job=job,
+            details=details,
+            deterministic_sql=deterministic_sql,
+        )
 
     def _verify_sql_prompt(self, job: dict[str, Any], details: list[dict[str, Any]], deterministic_sql: str) -> str:
-        payload = {
-            "task": "Generate Oracle verification SELECT SQL only.",
-            "rules": [
-                "Return only executable SQL. Do not include markdown fences or explanations.",
-                "Generate SELECT SQL that returns zero when verification passes.",
-                "Do not modify data.",
-                "Use Oracle SQL syntax.",
-            ],
-            "job": {
-                "map_id": job.get("map_id"),
-                "map_type": job.get("map_type"),
-                "source_table_expression": self._qualify_source_expression(job.get("fr_table", "")),
-                "target_table": self._qualify_table(job.get("to_table", ""), self.target_schema),
-                "condition": job.get("condition"),
-            },
-            "mapping_details": details,
-            "baseline_sql": deterministic_sql,
-        }
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        return self._render_sql_prompt(
+            template=self._require_prompt("verify_sql_prompt", "VERIFY SQL Prompt"),
+            job=job,
+            details=details,
+            deterministic_sql=deterministic_sql,
+        )
+
+    def _render_sql_prompt(self, template: str, job: dict[str, Any], details: list[dict[str, Any]], deterministic_sql: str) -> str:
+        to_table = self._qualify_table(job.get("to_table", ""), self.target_schema)
+        from_table = self._qualify_source_expression(job.get("fr_table", ""))
+        mapping_info = self._format_mapping_info(details)
+        ddl_info_block = self._build_ddl_info_block(from_table, to_table)
+        return self._replace_prompt_vars(
+            template,
+            ddl_info_block=ddl_info_block,
+            from_table=from_table,
+            to_table=to_table,
+            mapping_info=mapping_info,
+            condition=str(job.get("condition") or "").strip(),
+            deterministic_sql=deterministic_sql,
+        )
+
+    def _replace_prompt_vars(self, template: str, **values: str) -> str:
+        rendered = str(template or "")
+        for key, value in values.items():
+            rendered = rendered.replace("{" + key + "}", str(value))
+        return rendered
+
+    def _require_prompt(self, attr_name: str, display_name: str) -> str:
+        value = str(getattr(self, attr_name, "") or "").strip()
+        if not value:
+            raise ValueError(f"{display_name} input is required for SQL generation")
+        return value
+
+    def _format_mapping_info(self, details: list[dict[str, Any]]) -> str:
+        lines = []
+        for detail in details:
+            fr_col = str(detail.get("fr_col") or "").strip()
+            to_col = str(detail.get("to_col") or "").strip()
+            if to_col:
+                lines.append(f"  - {fr_col} -> {to_col}")
+            else:
+                lines.append(f"  - {fr_col} -> <skip target column; source expression may be used only as part of another mapped expression>")
+        return "\n".join(lines) if lines else "  - No mapping details"
+
+    def _build_ddl_info_block(self, from_table: str, to_table: str) -> str:
+        blocks = ["[DDL information]"]
+        for label, table_name in [("Source", from_table), ("Target", to_table)]:
+            try:
+                columns = self._table_columns_for_prompt(table_name)
+            except Exception as exc:
+                columns = f"Unable to load columns: {exc}"
+            blocks.append(f"- {label} {table_name}:\n{columns}")
+        return "\n".join(blocks)
+
+    def _table_columns_for_prompt(self, table_name: str) -> str:
+        clean = str(table_name or "").strip()
+        if not clean or any(token in clean.upper() for token in [" JOIN ", " SELECT ", " WITH "]):
+            return "Complex source expression. Use mapping rules as the source of truth."
+        schema = None
+        table = clean
+        if "." in clean:
+            schema, table = clean.split(".", 1)
+        meta = self._get_table_ddl(table, schema)
+        columns = meta.get("columns", [])
+        if not columns:
+            return "No columns found."
+        return "\n".join(
+            f"  - {col.get('column_name')} {col.get('data_type')}"
+            + (f"({col.get('data_precision')},{col.get('data_scale')})" if col.get("data_precision") else f"({col.get('data_length')})")
+            + f" nullable={col.get('nullable')}"
+            for col in columns[:200]
+        )
 
     def _call_llm(self, prompt: str) -> str:
         provider = str(self.llm_provider or "openai").strip().lower()
@@ -786,7 +856,6 @@ class MigrationCommandTool(Component):
         payload = {
             "model": model,
             "messages": [
-                {"role": "system", "content": "You generate Oracle SQL only."},
                 {"role": "user", "content": prompt},
             ],
             "max_tokens": max_tokens,
@@ -801,7 +870,6 @@ class MigrationCommandTool(Component):
         payload = {
             "model": model,
             "max_tokens": max_tokens,
-            "system": "You generate Oracle SQL only.",
             "messages": [{"role": "user", "content": prompt}],
         }
         data = self._post_json(
@@ -812,19 +880,73 @@ class MigrationCommandTool(Component):
         parts = data.get("content", [])
         return "\n".join(str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in parts)
 
-    def _extract_sql(self, value: Any, expected: str) -> str:
+    def _extract_sql(self, value: Any, expected: str, key: str | None = None) -> str:
         text = str(value or "").strip()
         if not text:
             raise ValueError("LLM returned empty SQL")
         fence = re.search(r"```(?:sql)?\s*(.*?)```", text, flags=re.I | re.S)
         if fence:
             text = fence.group(1).strip()
+        if key:
+            parsed = self._parse_llm_json(text)
+            text = str(parsed.get(key) or "").strip()
         text = text.rstrip(";").strip()
         first_word = text.split(None, 1)[0].upper() if text.split(None, 1) else ""
         allowed = {"insert": {"INSERT"}, "select": {"SELECT", "WITH"}}
         if first_word not in allowed.get(expected, set()):
             raise ValueError(f"Expected {expected.upper()} SQL but got: {first_word or text[:40]}")
         return text
+
+    def _parse_llm_json(self, text: str) -> dict[str, Any]:
+        clean = str(text or "").strip()
+        fence = re.search(r"```(?:json)?\s*(.*?)```", clean, flags=re.I | re.S)
+        if fence:
+            clean = fence.group(1).strip()
+        try:
+            parsed = json.loads(clean)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", clean, flags=re.S)
+            if not match:
+                raise
+            parsed = json.loads(match.group(0))
+        if not isinstance(parsed, dict):
+            raise ValueError("LLM JSON response must be an object")
+        return parsed
+
+    def _sanitize_migration_sql(self, sql: str) -> str:
+        cleaned = str(sql or "").strip().rstrip(";").strip()
+        if not cleaned:
+            raise ValueError("MIG_SQL is empty")
+        upper = cleaned.upper()
+        forbidden = ["TRUNCATE", "COMMIT", "ROLLBACK", "DELETE", "UPDATE", "MERGE", "DROP", "ALTER"]
+        for token in forbidden:
+            if re.search(rf"\b{token}\b", upper):
+                raise ValueError(f"MIG_SQL must not contain {token}")
+        statements = self._split_sql_script(cleaned)
+        if len(statements) != 1:
+            raise ValueError("MIG_SQL must contain exactly one INSERT statement")
+        statement = statements[0].strip().rstrip(";").strip()
+        if not statement.upper().startswith("INSERT"):
+            raise ValueError("MIG_SQL must start with INSERT")
+        return statement
+
+    def _sanitize_verify_sql(self, sql: str) -> str:
+        cleaned = str(sql or "").strip().rstrip(";").strip()
+        if not cleaned:
+            raise ValueError("VERIFY_SQL is empty")
+        upper = cleaned.upper()
+        forbidden = ["TRUNCATE", "COMMIT", "ROLLBACK", "INSERT", "DELETE", "UPDATE", "MERGE", "DROP", "ALTER"]
+        for token in forbidden:
+            if re.search(rf"\b{token}\b", upper):
+                raise ValueError(f"VERIFY_SQL must not contain {token}")
+        statements = self._split_sql_script(cleaned)
+        if len(statements) != 1:
+            raise ValueError("VERIFY_SQL must contain exactly one SELECT statement")
+        statement = statements[0].strip().rstrip(";").strip()
+        first_word = statement.split(None, 1)[0].upper() if statement.split(None, 1) else ""
+        if first_word not in {"SELECT", "WITH"}:
+            raise ValueError("VERIFY_SQL must start with SELECT or WITH")
+        return statement
 
     def _run_migration_job(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
         map_id = self._require_map_id(map_id)
@@ -1026,8 +1148,11 @@ class MigrationCommandTool(Component):
         to_table = self._qualify_table(job["to_table"], self.target_schema)
         fr_expr = self._qualify_source_expression(job["fr_table"])
         condition = str(job.get("condition") or "").strip()
-        target_cols = ", ".join(self._quote_identifier(d["to_col"]) for d in details)
-        source_cols = ", ".join(d["fr_col"] for d in details)
+        usable_details = [d for d in details if str(d.get("to_col") or "").strip()]
+        if not usable_details:
+            raise ValueError("No usable target columns found. All TO_COL values are empty.")
+        target_cols = ", ".join(self._quote_identifier(d["to_col"]) for d in usable_details)
+        source_cols = ", ".join(d["fr_col"] for d in usable_details)
         where_clause = f"\nWHERE {condition}" if condition else ""
         return f"INSERT INTO {to_table} ({target_cols})\nSELECT {source_cols}\nFROM {fr_expr}{where_clause}"
 
