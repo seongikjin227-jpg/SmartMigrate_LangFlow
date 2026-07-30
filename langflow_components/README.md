@@ -2,6 +2,9 @@
 
 파일: `langflow_components/migration_command_tool.py`
 
+대시보드 요약 툴은 `langflow_components/dashboard_command_tool.py`를 사용한다.
+사용법은 `langflow_components/dashboard_command_tool.md`를 참고한다.
+
 Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코드를 붙여 넣는다.
 
 ## 먼저 테스트할 command
@@ -238,10 +241,7 @@ oracledb
 
 ```text
 auto_install_packages=true
-pip_trusted_host=사내 PyPI/proxy host 또는 URL
 ```
-
-주의: `pip --trusted-host`는 URL 전체가 아니라 host 값을 기대한다. 컴포넌트는 URL을 입력해도 hostname만 추출해서 사용한다.
 
 내부 설치 패턴:
 
@@ -252,8 +252,6 @@ subprocess.check_call([
     "pip",
     "install",
     package,
-    "--trusted-host",
-    trusted_host,
 ])
 ```
 

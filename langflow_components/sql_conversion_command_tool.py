@@ -225,8 +225,7 @@ class SqlConversionCommandTool(Component):
                            DBMS_LOB.GETLENGTH(EDIT_FR_SQL) AS EDIT_FR_SQL_LEN,
                            PRIORITY, UPD_TS
                     FROM {table}
-                    WHERE (STATUS_CONVERSION IS NULL OR UPPER(TRIM(STATUS_CONVERSION)) IN ('READY', 'PENDING', 'URGENT', 'FAIL', 'FAIL-TOBE'))
-                      AND TO_SQL_TEXT IS NULL
+                    WHERE (STATUS_CONVERSION IS NULL OR UPPER(TRIM(STATUS_CONVERSION)) = 'READY')
                     ORDER BY PRIORITY ASC NULLS LAST, UPD_TS NULLS FIRST, SPACE_NM, SQL_ID
                 )
                 WHERE ROWNUM <= :1
