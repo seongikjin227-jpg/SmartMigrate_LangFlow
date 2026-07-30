@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
-import sys
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from typing import Any
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus
 
 from lfx.custom.custom_component.component import Component
-from lfx.io import BoolInput, IntInput, MessageTextInput, SecretStrInput, StrInput, Output
+from lfx.io import IntInput, MessageTextInput, SecretStrInput, StrInput, Output
 from lfx.schema.data import Data
 
 
@@ -71,19 +69,6 @@ class SqlConversionCommandTool(Component):
             info="Target schema to apply to physical TO-BE tables.",
         ),
         IntInput(name="list_limit", display_name="Default List Limit", value=10, required=False),
-        BoolInput(
-            name="auto_install_packages",
-            display_name="Auto Install Missing Packages",
-            value=False,
-            required=False,
-            info="If true, installs missing runtime packages with pip before DB connection.",
-        ),
-        StrInput(
-            name="pip_trusted_host",
-            display_name="Pip Trusted Host",
-            required=False,
-            info="Optional trusted host for internal PyPI/proxy. Hostname is extracted if a full URL is entered.",
-        ),
     ]
 
     outputs = [
@@ -156,29 +141,9 @@ class SqlConversionCommandTool(Component):
         return db
 
     def _ensure_runtime_dependencies(self) -> None:
-        try:
-            import langchain_community.utilities  # noqa: F401
-            import oracledb  # noqa: F401
-            import sqlalchemy  # noqa: F401
-        except ImportError:
-            if not self._as_bool(self.auto_install_packages):
-                raise
-            for package in ["langchain-community", "SQLAlchemy", "oracledb"]:
-                self._pip_install(package)
-
-    def _pip_install(self, package: str) -> None:
-        cmd = [sys.executable, "-m", "pip", "install", package]
-        trusted_host = self._normalize_trusted_host(self.pip_trusted_host)
-        if trusted_host:
-            cmd.extend(["--trusted-host", trusted_host])
-        subprocess.check_call(cmd)
-
-    def _normalize_trusted_host(self, value: Any) -> str:
-        text = str(value or "").strip()
-        if not text:
-            return ""
-        parsed = urlparse(text)
-        return parsed.hostname or text.replace("https://", "").replace("http://", "").split("/")[0]
+        import langchain_community.utilities
+        import oracledb
+        import sqlalchemy
 
     @contextmanager
     def _connect(self):

@@ -56,7 +56,7 @@ Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코�
 | `reset` | 특정 map_id의 `STATUS`, `RETRY_COUNT`, `BATCH_CNT`를 초기화, SQL은 보존, `confirm=true` 필요 |
 | `save_user_sql` | 사용자가 수정한 MIG_SQL/VERIFY_SQL 저장, `confirm=true` 필요 |
 | `analyze_failure` | 최근 실패 로그와 저장 SQL 조회 |
-| `run_migration_job` | LLM SQL 생성, 저장, 실행, 검증, 상태 저장 전체 사이클 |
+| `run_migration_job` | LLM SQL 생성, 실행, 검증, 최종 SQL/상태 저장 전체 사이클 |
 
 `analyze_failure`는 `NEXT_MIG_LOG`를 `CREATED_AT DESC, LOG_ID DESC` 순서로 조회한다. 응답의 `latest_failure_log`를 우선 보고, `recent_logs`는 보조 맥락으로 사용한다.
 
@@ -113,10 +113,10 @@ LLM 생성이 실패하면 fallback 없이 실패한다.
 - `NEXT_MIG_INFO_DTL.TO_COL`이 비어 있는 매핑은 target insert 컬럼에서 제외한다. 이 값은 스킵되었거나 다른 expression에 합쳐진 컬럼으로 본다.
 - `MAP_TYPE=COMPLEX`인 경우 `FR_TABLE`은 물리 테이블명이 아니라 완성된 source `SELECT` 또는 `WITH` query로 본다. 프롬프트에서는 `{source_from_clause}`를 `FROM` 뒤에 그대로 사용하고, 컬럼은 `SRC.FR_COL` 형태로 참조하게 한다.
 - LLM 프롬프트는 파일에서 읽지 않는다. Langflow input인 `mig_sql_prompt`, `verify_sql_prompt` 두 개로 받는다.
-- `MIG_SQL`에 저장되는 값은 단일 `INSERT` 문이어야 한다.
-- `MIG_SQL`에는 `TRUNCATE`, `COMMIT`, `ROLLBACK`, `DELETE`, `UPDATE`, `MERGE`, `DROP`, `ALTER`를 저장하지 않는다.
-- `VERIFY_SQL`에 저장되는 값은 단일 `SELECT` 또는 `WITH` 문이어야 한다.
-- SQL 값 끝의 세미콜론은 제거해서 저장한다.
+- 생성되는 `MIG_SQL`은 단일 `INSERT` 문이어야 한다.
+- `MIG_SQL`에는 `TRUNCATE`, `COMMIT`, `ROLLBACK`, `DELETE`, `UPDATE`, `MERGE`, `DROP`, `ALTER`를 포함하지 않는다.
+- 생성되는 `VERIFY_SQL`은 단일 `SELECT` 또는 `WITH` 문이어야 한다.
+- SQL 값 끝의 세미콜론은 제거한다.
 
 프롬프트 input에 넣을 텍스트는 `langflow/06_migration_prompt_inputs.md`를 참고한다.
 
@@ -139,6 +139,11 @@ LLM 생성이 실패하면 fallback 없이 실패한다.
 7. 내부 검증 helper로 `VERIFY_SQL` 실행
 8. 실패 시 DB `STATUS`를 바로 저장하지 않고 retry loop 내부에서 재생성/재실행
 9. 최종 성공/실패가 확정되면 `PASS`, `FAIL-INSERT`, `FAIL-TEST`를 DB에 저장
+
+`run_migration_job` 내부 retry 중간에는 생성 SQL을 `NEXT_MIG_INFO.MIG_SQL`, `NEXT_MIG_INFO.VERIFY_SQL`에 저장하지 않는다.
+최종 `PASS`, `FAIL-INSERT`, `FAIL-TEST`가 확정된 시점에 마지막으로 사용한 SQL을 저장한다.
+사용자가 직접 저장하는 SQL은 `save_user_sql`만 수행하며, 이때만 `USER_EDITED='Y'`로 표시한다.
+내부 생성 SQL은 retry 중에도 `NEXT_MIG_LOG.GENERATE_SQL` 로그로 남긴다.
 
 Retry 정책:
 
@@ -226,7 +231,7 @@ cache_key = host|port|service_name|username
 
 SELECT 계열 조회는 `db.run(query, include_columns=True)` 패턴을 사용한다. UPDATE/INSERT/TRUNCATE처럼 commit과 rowcount가 필요한 작업은 같은 cached `SQLDatabase`의 SQLAlchemy engine transaction을 사용한다.
 
-## 런타임 패키지 설치 옵션
+## 런타임 패키지 사전 설치
 
 Langflow 런타임에 필요한 패키지가 없으면 DB 연결 전에 오류가 난다.
 필요 패키지:
@@ -237,22 +242,10 @@ SQLAlchemy
 oracledb
 ```
 
-사내망에서 Langflow 런타임이 패키지를 직접 설치해야 하는 경우에만 `Auto Install Missing Packages=true`로 켠다.
+패키지는 Langflow 실행 환경에 미리 설치한다.
 
-```text
-auto_install_packages=true
-```
-
-내부 설치 패턴:
-
-```python
-subprocess.check_call([
-    sys.executable,
-    "-m",
-    "pip",
-    "install",
-    package,
-])
+```bash
+pip install langchain-community SQLAlchemy oracledb
 ```
 
 ## 기존 소스 코드의 DB 접속 방식
