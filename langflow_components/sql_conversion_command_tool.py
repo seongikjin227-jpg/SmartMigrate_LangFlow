@@ -29,7 +29,7 @@ class SqlConversionCommandTool(Component):
             display_name="Command JSON",
             required=True,
             tool_mode=True,
-            info='JSON command. Example: {"action":"status","row_id":"..."}',
+            info='JSON command. Example: {"action":"status","space_nm":"SFA","sql_id":"selectUser"}',
         ),
         StrInput(name="db_host", display_name="DB Host", required=True),
         IntInput(name="db_port", display_name="DB Port", value=1521, required=True),
@@ -226,8 +226,7 @@ class SqlConversionCommandTool(Component):
                 f"""
                 SELECT *
                 FROM (
-                    SELECT ROWIDTOCHAR(ROWID) AS ROW_ID,
-                           TAG_KIND, SPACE_NM, SQL_ID, STATUS_CONVERSION,
+                    SELECT TAG_KIND, SPACE_NM, SQL_ID, STATUS_CONVERSION,
                            DBMS_LOB.SUBSTR(FR_SQL_TEXT, 1000, 1) AS FR_SQL_PREVIEW,
                            DBMS_LOB.GETLENGTH(FR_SQL_TEXT) AS FR_SQL_LEN,
                            DBMS_LOB.GETLENGTH(EDIT_FR_SQL) AS EDIT_FR_SQL_LEN,
@@ -244,16 +243,15 @@ class SqlConversionCommandTool(Component):
             rows = cur.fetchall()
         jobs = [
             {
-                "row_id": self._to_text(r[0]),
-                "tag_kind": self._to_text(r[1]),
-                "space_nm": self._to_text(r[2]),
-                "sql_id": self._to_text(r[3]),
-                "status_conversion": self._to_text(r[4]),
-                "fr_sql_preview": self._to_text(r[5]),
-                "fr_sql_len": r[6],
-                "edit_fr_sql_len": r[7],
-                "priority": r[8],
-                "upd_ts": self._to_text(r[9]),
+                "tag_kind": self._to_text(r[0]),
+                "space_nm": self._to_text(r[1]),
+                "sql_id": self._to_text(r[2]),
+                "status_conversion": self._to_text(r[3]),
+                "fr_sql_preview": self._to_text(r[4]),
+                "fr_sql_len": r[5],
+                "edit_fr_sql_len": r[6],
+                "priority": r[7],
+                "upd_ts": self._to_text(r[8]),
             }
             for r in rows
         ]
@@ -265,7 +263,7 @@ class SqlConversionCommandTool(Component):
             return {"ok": False, "error": "job not found"}
         source_sql = str(job.get("edit_fr_sql") or job.get("fr_sql_text") or "").strip()
         if not source_sql:
-            return {"ok": False, "row_id": job.get("row_id"), "error": "source SQL is empty"}
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "source SQL is empty"}
 
         prompt = self._render_to_sql_prompt(
             from_sql=source_sql,
@@ -280,16 +278,16 @@ class SqlConversionCommandTool(Component):
             if not self._as_bool(command.get("confirm", False)):
                 return {
                     "ok": False,
-                    "row_id": job.get("row_id"),
+                    "space_nm": job.get("space_nm"),
+                    "sql_id": job.get("sql_id"),
                     "status": "CONFIRM_REQUIRED",
                     "error": "generate_to_sql_text with save=true requires confirm=true because it updates NEXT_SQL_INFO.",
                     "to_sql_text": to_sql_text,
                 }
-            self._save_to_sql_text(str(job["row_id"]), to_sql_text)
+            self._save_to_sql_text(str(job["space_nm"]), str(job["sql_id"]), to_sql_text)
 
         return {
             "ok": True,
-            "row_id": job.get("row_id"),
             "space_nm": job.get("space_nm"),
             "sql_id": job.get("sql_id"),
             "status": "TO_SQL_TEXT_GENERATED",
@@ -299,54 +297,45 @@ class SqlConversionCommandTool(Component):
 
     def _load_job(self, command: dict[str, Any]) -> dict[str, Any] | None:
         table = self._system_table("NEXT_SQL_INFO")
-        row_id = str(command.get("row_id") or "").strip()
         sql_id = str(command.get("sql_id") or "").strip()
         space_nm = str(command.get("space_nm") or "").strip()
-        if not row_id and not sql_id:
-            raise ValueError("row_id or sql_id is required")
-
-        where_sql = "ROWID = CHARTOROWID(:1)" if row_id else "SQL_ID = :1"
-        params = [row_id or sql_id]
-        if not row_id and space_nm:
-            where_sql += " AND SPACE_NM = :2"
-            params.append(space_nm)
+        if not space_nm or not sql_id:
+            raise ValueError("space_nm and sql_id are required")
 
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute(
                 f"""
-                SELECT ROWIDTOCHAR(ROWID) AS ROW_ID,
-                       TAG_KIND, SPACE_NM, SQL_ID, FR_SQL_TEXT, EDIT_FR_SQL,
+                SELECT TAG_KIND, SPACE_NM, SQL_ID, FR_SQL_TEXT, EDIT_FR_SQL,
                        TARGET_TABLE, TO_SQL_TEXT, STATUS_CONVERSION, LOG,
                        FR_BINDTUNED_SQL, TOBE_CORRECT_SQL, SQL_LENGTH, MAP_TYPE,
-                       PRIORITY, BATCH_CNT, CREATED_AT, UPD_TS
+                       PRIORITY, BATCH_CNT, UPD_TS
                 FROM {table}
-                WHERE {where_sql}
+                WHERE SPACE_NM = :1
+                  AND SQL_ID = :2
                 """,
-                params,
+                [space_nm, sql_id],
             )
             row = cur.fetchone()
         if not row:
             return None
         return {
-            "row_id": self._to_text(row[0]),
-            "tag_kind": self._to_text(row[1]),
-            "space_nm": self._to_text(row[2]),
-            "sql_id": self._to_text(row[3]),
-            "fr_sql_text": self._to_text(row[4]),
-            "edit_fr_sql": self._to_text(row[5]),
-            "target_table": self._to_text(row[6]),
-            "to_sql_text": self._to_text(row[7]),
-            "status_conversion": self._to_text(row[8]),
-            "log": self._to_text(row[9]),
-            "fr_bindtuned_sql": self._to_text(row[10]),
-            "tobe_correct_sql": self._to_text(row[11]),
-            "sql_length": self._to_text(row[12]),
-            "map_type": self._to_text(row[13]),
-            "priority": row[14],
-            "batch_cnt": row[15],
-            "created_at": self._to_text(row[16]),
-            "upd_ts": self._to_text(row[17]),
+            "tag_kind": self._to_text(row[0]),
+            "space_nm": self._to_text(row[1]),
+            "sql_id": self._to_text(row[2]),
+            "fr_sql_text": self._to_text(row[3]),
+            "edit_fr_sql": self._to_text(row[4]),
+            "target_table": self._to_text(row[5]),
+            "to_sql_text": self._to_text(row[6]),
+            "status_conversion": self._to_text(row[7]),
+            "log": self._to_text(row[8]),
+            "fr_bindtuned_sql": self._to_text(row[9]),
+            "tobe_correct_sql": self._to_text(row[10]),
+            "sql_length": self._to_text(row[11]),
+            "map_type": self._to_text(row[12]),
+            "priority": row[13],
+            "batch_cnt": row[14],
+            "upd_ts": self._to_text(row[15]),
         }
 
     def _build_mapping_schema_text(self, source_sql: str) -> str:
@@ -489,7 +478,7 @@ class SqlConversionCommandTool(Component):
             detail = exc.read().decode("utf-8", errors="ignore")[:1000]
             raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
 
-    def _save_to_sql_text(self, row_id: str, to_sql_text: str) -> None:
+    def _save_to_sql_text(self, space_nm: str, sql_id: str, to_sql_text: str) -> None:
         table = self._system_table("NEXT_SQL_INFO")
         with self._connect() as conn:
             cur = conn.cursor()
@@ -499,9 +488,10 @@ class SqlConversionCommandTool(Component):
                 SET TO_SQL_TEXT = :1,
                     LOG = 'TO_SQL_TEXT generated by Langflow SQL Conversion Command Tool',
                     UPD_TS = CURRENT_TIMESTAMP
-                WHERE ROWID = CHARTOROWID(:2)
+                WHERE SPACE_NM = :2
+                  AND SQL_ID = :3
                 """,
-                [to_sql_text, row_id],
+                [to_sql_text, space_nm, sql_id],
             )
             conn.commit()
 

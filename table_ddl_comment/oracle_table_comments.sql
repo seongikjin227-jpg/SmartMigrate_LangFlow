@@ -1,0 +1,106 @@
+SET DEFINE OFF;
+
+PROMPT === SmartMigration table comments ===
+
+COMMENT ON TABLE NEXT_MIG_INFO IS 'DB migration job master. Stores source/target table mapping, migration SQL, verification SQL, execution status, retry count, and dependency metadata.';
+COMMENT ON COLUMN NEXT_MIG_INFO.MAP_ID IS 'Migration job identifier.';
+COMMENT ON COLUMN NEXT_MIG_INFO.MAP_TYPE IS 'Mapping type. SIMPLE/TABLE style mappings use FR_TABLE as a table or join; COMPLEX uses FR_TABLE as a virtual source SELECT/WITH query.';
+COMMENT ON COLUMN NEXT_MIG_INFO.FR_TABLE IS 'Source table, join expression, or virtual source query for COMPLEX mappings.';
+COMMENT ON COLUMN NEXT_MIG_INFO.TO_TABLE IS 'Target table name for migration.';
+COMMENT ON COLUMN NEXT_MIG_INFO.USE_YN IS 'Whether this migration job is active. Y means active, N means excluded.';
+COMMENT ON COLUMN NEXT_MIG_INFO.TRUNC_YN IS 'Whether target truncation is requested by metadata. Langflow command tool does not store TRUNCATE in MIG_SQL.';
+COMMENT ON COLUMN NEXT_MIG_INFO.PRIORITY IS 'Execution priority. Lower number runs earlier within the same target dependency group.';
+COMMENT ON COLUMN NEXT_MIG_INFO.STATUS IS 'Final migration status. NULL means runnable; PASS means verification passed; FAIL-INSERT/FAIL-TEST/SKIP/WAITING indicate final failure or blocked state.';
+COMMENT ON COLUMN NEXT_MIG_INFO.USER_EDITED IS 'Whether MIG_SQL/VERIFY_SQL was manually supplied by the user. Y is set only by explicit user SQL save.';
+COMMENT ON COLUMN NEXT_MIG_INFO.PRIOR_MAP_ID IS 'Required prior migration MAP_ID. Current job can run only after the prior job is PASS.';
+COMMENT ON COLUMN NEXT_MIG_INFO.CONDITION IS 'Optional source filter condition used when generating migration and verification SQL.';
+COMMENT ON COLUMN NEXT_MIG_INFO.MIG_SQL IS 'Generated or user-supplied migration INSERT...SELECT SQL. Must not include TRUNCATE, COMMIT, or DDL/DML other than the INSERT.';
+COMMENT ON COLUMN NEXT_MIG_INFO.VERIFY_SQL IS 'Generated or user-supplied verification SELECT/WITH SQL. It should return zero-difference style results when verification passes.';
+COMMENT ON COLUMN NEXT_MIG_INFO.BATCH_CNT IS 'Number of full migration job runs attempted for this map_id.';
+COMMENT ON COLUMN NEXT_MIG_INFO.ELAPSED_SECONDS IS 'Elapsed seconds from the latest completed migration run.';
+COMMENT ON COLUMN NEXT_MIG_INFO.RETRY_COUNT IS 'Retry attempt count recorded for the latest run.';
+COMMENT ON COLUMN NEXT_MIG_INFO.CREATED_AT IS 'Row creation timestamp.';
+COMMENT ON COLUMN NEXT_MIG_INFO.UPD_TS IS 'Last update timestamp.';
+
+COMMENT ON TABLE NEXT_MIG_INFO_DTL IS 'DB migration column mapping detail rows linked to NEXT_MIG_INFO.';
+COMMENT ON COLUMN NEXT_MIG_INFO_DTL.MAP_DTL IS 'Column mapping detail identifier.';
+COMMENT ON COLUMN NEXT_MIG_INFO_DTL.MAP_ID IS 'Migration job identifier referencing NEXT_MIG_INFO.MAP_ID.';
+COMMENT ON COLUMN NEXT_MIG_INFO_DTL.FR_COL IS 'Source column or source expression alias.';
+COMMENT ON COLUMN NEXT_MIG_INFO_DTL.TO_COL IS 'Target column. Empty values mean the source is skipped or merged into another mapped expression.';
+COMMENT ON COLUMN NEXT_MIG_INFO_DTL.CREATED_AT IS 'Row creation timestamp.';
+
+COMMENT ON TABLE NEXT_MIG_LOG IS 'Append-style DB migration execution and generation log.';
+COMMENT ON COLUMN NEXT_MIG_LOG.CREATED_AT IS 'Log creation timestamp.';
+COMMENT ON COLUMN NEXT_MIG_LOG.STATUS IS 'Status value at this log step.';
+COMMENT ON COLUMN NEXT_MIG_LOG.MESSAGE IS 'Log message or error summary.';
+COMMENT ON COLUMN NEXT_MIG_LOG.LOG_ID IS 'Migration log identifier. Usually generated from MIGRATION_LOG_SEQ.';
+COMMENT ON COLUMN NEXT_MIG_LOG.MAP_ID IS 'Migration job identifier related to this log row.';
+COMMENT ON COLUMN NEXT_MIG_LOG.LOG_TYPE IS 'Log category such as GENERATE_SQL, ROW_ERROR, JOB_FAIL, RESET, or SAVE_USER_SQL.';
+COMMENT ON COLUMN NEXT_MIG_LOG.LOG_LEVEL IS 'Log level such as INFO, WARN, or ERROR.';
+COMMENT ON COLUMN NEXT_MIG_LOG.STEP_NAME IS 'Migration step name such as GENERATE_MIG_SQL, EXECUTE_MIG_SQL, GENERATE_VERIFY_SQL, VERIFY_SQL, FINAL.';
+COMMENT ON COLUMN NEXT_MIG_LOG.RETRY_COUNT IS 'Retry attempt number at the time of the log.';
+COMMENT ON COLUMN NEXT_MIG_LOG.MIG_KIND IS 'Migration kind. Default DB_MIG.';
+COMMENT ON COLUMN NEXT_MIG_LOG.GENERATE_SQL IS 'Generated or executed SQL related to this log row.';
+COMMENT ON COLUMN NEXT_MIG_LOG.UPD_TS IS 'Last update timestamp for this log row.';
+
+COMMENT ON TABLE NEXT_SQL_INFO IS 'SQL conversion, tuning, formatting, bind, and test job master populated from mapper XML or manual registration.';
+COMMENT ON COLUMN NEXT_SQL_INFO.TAG_KIND IS 'Mapper tag kind such as select, insert, update, or delete.';
+COMMENT ON COLUMN NEXT_SQL_INFO.SPACE_NM IS 'Mapper namespace or logical SQL space name.';
+COMMENT ON COLUMN NEXT_SQL_INFO.SQL_ID IS 'Mapper SQL identifier. Unique with SPACE_NM.';
+COMMENT ON COLUMN NEXT_SQL_INFO.FR_SQL_TEXT IS 'Original source SQL text.';
+COMMENT ON COLUMN NEXT_SQL_INFO.EDIT_FR_SQL IS 'User-edited source SQL text. Used before FR_SQL_TEXT when present.';
+COMMENT ON COLUMN NEXT_SQL_INFO.TARGET_TABLE IS 'Source/target table hints extracted from the SQL and used for mapping/RAG filtering.';
+COMMENT ON COLUMN NEXT_SQL_INFO.TO_SQL_TEXT IS 'Generated target SQL conversion result.';
+COMMENT ON COLUMN NEXT_SQL_INFO.TUNED_SQL IS 'Generated tuned SQL result.';
+COMMENT ON COLUMN NEXT_SQL_INFO.STATUS_TUNING IS 'SQL tuning status.';
+COMMENT ON COLUMN NEXT_SQL_INFO.TUNED_RESULT IS 'SQL tuning analysis or execution result.';
+COMMENT ON COLUMN NEXT_SQL_INFO.BIND_SQL IS 'Generated SQL with bind variables.';
+COMMENT ON COLUMN NEXT_SQL_INFO.BIND_SET IS 'Generated bind variable set or bind metadata.';
+COMMENT ON COLUMN NEXT_SQL_INFO.TEST_SQL IS 'Generated SQL used for validation/testing.';
+COMMENT ON COLUMN NEXT_SQL_INFO.STATUS_CONVERSION IS 'SQL conversion status.';
+COMMENT ON COLUMN NEXT_SQL_INFO.LOG IS 'Latest summary log message for this SQL job.';
+COMMENT ON COLUMN NEXT_SQL_INFO.FR_BINDTUNED_SQL IS 'Source SQL after bind/tuning preparation.';
+COMMENT ON COLUMN NEXT_SQL_INFO.TOBE_CORRECT_SQL IS 'User-corrected target SQL conversion answer.';
+COMMENT ON COLUMN NEXT_SQL_INFO.BIND_CORRECT_SQL IS 'User-corrected bind SQL answer.';
+COMMENT ON COLUMN NEXT_SQL_INFO.TEST_CORRECT_SQL IS 'User-corrected test SQL answer.';
+COMMENT ON COLUMN NEXT_SQL_INFO.SQL_LENGTH IS 'SQL length bucket or length metadata.';
+COMMENT ON COLUMN NEXT_SQL_INFO.MAP_TYPE IS 'SQL mapping type used by conversion pipeline.';
+COMMENT ON COLUMN NEXT_SQL_INFO.PRIORITY IS 'SQL job priority. Lower number is processed earlier.';
+COMMENT ON COLUMN NEXT_SQL_INFO.BATCH_CNT IS 'Number of SQL pipeline run attempts.';
+COMMENT ON COLUMN NEXT_SQL_INFO.FORMATTED_SQL IS 'Formatted SQL result.';
+COMMENT ON COLUMN NEXT_SQL_INFO.FORMATTING_RETRY_YN IS 'Whether SQL formatting retry is requested. Y/N.';
+COMMENT ON COLUMN NEXT_SQL_INFO.BLOCK_RAG_CONTENT IS 'RAG guidance block captured or supplied for this SQL job.';
+COMMENT ON COLUMN NEXT_SQL_INFO.UPD_TS IS 'Last update timestamp.';
+
+COMMENT ON TABLE NEXT_SQL_LOG IS 'Append-only SQL conversion, tuning, bind, test, and formatting stage log.';
+COMMENT ON COLUMN NEXT_SQL_LOG.LOG_ID IS 'SQL log identifier generated by identity.';
+COMMENT ON COLUMN NEXT_SQL_LOG.CREATED_AT IS 'Log creation timestamp.';
+COMMENT ON COLUMN NEXT_SQL_LOG.SPACE_NM IS 'Mapper namespace or logical SQL space name.';
+COMMENT ON COLUMN NEXT_SQL_LOG.SQL_ID IS 'Mapper SQL identifier.';
+COMMENT ON COLUMN NEXT_SQL_LOG.SQL_INFO_ROWID IS 'ROWID string of the related NEXT_SQL_INFO row.';
+COMMENT ON COLUMN NEXT_SQL_LOG.SQL_KIND IS 'SQL pipeline artifact kind such as TOBE_SQL, BIND_SQL, TEST_SQL, TUNED_SQL, or ERROR.';
+COMMENT ON COLUMN NEXT_SQL_LOG.SQL_CONTENT IS 'SQL text or generated artifact content for this log row.';
+COMMENT ON COLUMN NEXT_SQL_LOG.STATUS IS 'Stage status such as PASS, FAIL, or NA.';
+COMMENT ON COLUMN NEXT_SQL_LOG.PROMPT_NAME IS 'Prompt template name used for this generation step.';
+COMMENT ON COLUMN NEXT_SQL_LOG.MODEL_NAME IS 'LLM model name used for this generation step.';
+COMMENT ON COLUMN NEXT_SQL_LOG.BATCH_NO IS 'Batch execution number.';
+COMMENT ON COLUMN NEXT_SQL_LOG.CYCLE_NO IS 'Pipeline cycle number.';
+COMMENT ON COLUMN NEXT_SQL_LOG.ELAPSED_SECONDS IS 'Elapsed seconds for this stage.';
+COMMENT ON COLUMN NEXT_SQL_LOG.ATTEMPT_NO IS 'Attempt number for retryable stage execution.';
+COMMENT ON COLUMN NEXT_SQL_LOG.STAGE_NAME IS 'Pipeline stage name.';
+COMMENT ON COLUMN NEXT_SQL_LOG.ERROR_MESSAGE IS 'Error message or failure detail.';
+
+COMMENT ON TABLE NEXT_MIG_RAG_INFO IS 'Reusable RAG guidance and example SQL rules for SQL conversion and tuning.';
+COMMENT ON COLUMN NEXT_MIG_RAG_INFO.RAG_ID IS 'RAG rule identifier.';
+COMMENT ON COLUMN NEXT_MIG_RAG_INFO.CATEGORY IS 'Rule category such as SQL_CONVERSION or SQL_TUNING.';
+COMMENT ON COLUMN NEXT_MIG_RAG_INFO.RULE_TYPE IS 'Rule type such as SEARCH, PATTERN, or GUIDE.';
+COMMENT ON COLUMN NEXT_MIG_RAG_INFO.SOURCE_TABLES IS 'Comma or text list of source tables used to match the rule.';
+COMMENT ON COLUMN NEXT_MIG_RAG_INFO.USE_YN IS 'Whether this RAG rule is active. Y/N.';
+COMMENT ON COLUMN NEXT_MIG_RAG_INFO.GUIDANCE_TEXT IS 'Natural language guidance for the LLM.';
+COMMENT ON COLUMN NEXT_MIG_RAG_INFO.SOURCE_SQL IS 'Example source SQL.';
+COMMENT ON COLUMN NEXT_MIG_RAG_INFO.TARGET_SQL IS 'Example converted or tuned target SQL.';
+COMMENT ON COLUMN NEXT_MIG_RAG_INFO.HIT_CNT IS 'Number of times this rule was selected or used.';
+COMMENT ON COLUMN NEXT_MIG_RAG_INFO.CREATED_AT IS 'Row creation timestamp.';
+COMMENT ON COLUMN NEXT_MIG_RAG_INFO.UPDATED_AT IS 'Last update timestamp.';
+
+COMMIT;
