@@ -60,7 +60,6 @@ db_service_name
 db_username
 db_password
 
-llm_provider
 llm_base_url
 llm_api_key
 llm_model
@@ -73,6 +72,7 @@ target_schema
 ```
 
 DB and LLM connection behavior matches `Migration Command Tool`.
+LLM calls use OpenAI-compatible `/chat/completions` only.
 
 ## Prompt Input
 

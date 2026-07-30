@@ -280,7 +280,6 @@ db = SQLDatabase.from_uri(connection_string)
 기존 `.env.example`의 LLM 설정을 Langflow input으로 옮긴다.
 
 ```text
-llm_provider=openai 또는 anthropic
 llm_base_url=사내 LLM gateway URL
 llm_api_key=LLM API Key
 llm_model=claude-haiku-4-5-20251001 또는 사내 모델명
@@ -308,8 +307,7 @@ LLM provider 동작:
 
 | provider | 호출 방식 |
 | --- | --- |
-| `openai` | OpenAI-compatible `/chat/completions` |
-| `anthropic` | Anthropic `/v1/messages` |
+| `openai-compatible` | OpenAI-compatible `/chat/completions` only |
 
 ## DDL 조회 command
 

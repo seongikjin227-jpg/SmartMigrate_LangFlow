@@ -37,17 +37,10 @@ class SqlConversionCommandTool(Component):
         StrInput(name="db_username", display_name="Username", required=True),
         SecretStrInput(name="db_password", display_name="Password", required=True),
         StrInput(
-            name="llm_provider",
-            display_name="LLM Provider",
-            value="openai",
-            required=False,
-            info="openai for OpenAI-compatible API, anthropic for Anthropic API.",
-        ),
-        StrInput(
             name="llm_base_url",
             display_name="LLM Base URL",
             required=False,
-            info="Internal LLM gateway base URL. Leave blank to use provider default.",
+            info="OpenAI-compatible LLM gateway base URL. Only OpenAI-compatible chat/completions is supported.",
         ),
         SecretStrInput(name="llm_api_key", display_name="LLM API Key", required=False),
         StrInput(name="llm_model", display_name="LLM Model", value="claude-haiku-4-5-20251001", required=False),
@@ -209,9 +202,9 @@ class SqlConversionCommandTool(Component):
     def _test_llm_connection(self) -> dict[str, Any]:
         try:
             text = self._call_llm("Return exactly: OK")
-            return {"ok": bool(text.strip()), "provider": self.llm_provider, "model": self.llm_model, "response_preview": text[:200]}
+            return {"ok": bool(text.strip()), "provider": "openai-compatible", "model": self.llm_model, "response_preview": text[:200]}
         except Exception as exc:
-            return {"ok": False, "message": str(exc), "provider": self.llm_provider, "model": self.llm_model}
+            return {"ok": False, "message": str(exc), "provider": "openai-compatible", "model": self.llm_model}
 
     def _status(self, command: dict[str, Any]) -> dict[str, Any]:
         job = self._load_job(command)
@@ -429,7 +422,6 @@ class SqlConversionCommandTool(Component):
         return template
 
     def _call_llm(self, prompt: str) -> str:
-        provider = str(self.llm_provider or "openai").strip().lower()
         api_key = str(self.llm_api_key or "").strip()
         model = str(self.llm_model or "").strip()
         max_tokens = int(self.llm_max_tokens or 4096)
@@ -437,11 +429,6 @@ class SqlConversionCommandTool(Component):
             raise ValueError("LLM API key is empty")
         if not model:
             raise ValueError("LLM model is empty")
-        if provider == "anthropic":
-            return self._call_anthropic_llm(api_key, model, max_tokens, prompt)
-        return self._call_openai_compatible_llm(api_key, model, max_tokens, prompt)
-
-    def _call_openai_compatible_llm(self, api_key: str, model: str, max_tokens: int, prompt: str) -> str:
         base_url = str(self.llm_base_url or "https://api.openai.com/v1").strip().rstrip("/")
         url = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
         payload = {
@@ -452,18 +439,6 @@ class SqlConversionCommandTool(Component):
         }
         data = self._post_json(url, payload, {"Authorization": f"Bearer {api_key}"})
         return str(data["choices"][0]["message"].get("content", ""))
-
-    def _call_anthropic_llm(self, api_key: str, model: str, max_tokens: int, prompt: str) -> str:
-        base_url = str(self.llm_base_url or "https://api.anthropic.com").strip().rstrip("/")
-        url = base_url if base_url.endswith("/messages") else f"{base_url}/v1/messages"
-        payload = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        data = self._post_json(url, payload, {"x-api-key": api_key, "anthropic-version": "2023-06-01"})
-        parts = data.get("content", [])
-        return "\n".join(str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in parts)
 
     def _post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
