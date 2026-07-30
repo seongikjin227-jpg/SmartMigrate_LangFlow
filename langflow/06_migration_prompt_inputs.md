@@ -3,6 +3,10 @@
 Common placeholders:
 - `{ddl_info_block}`: source/target DDL-like column information
 - `{from_table}`, `{to_table}`, `{condition}`, `{mapping_info}`: migration metadata
+- `{source_kind}`: `TABLE_OR_JOIN` or `COMPLEX_QUERY`
+- `{source_query}`: raw/qualified source table, join, SELECT, or WITH text
+- `{source_from_clause}`: source expression to place after FROM. For `COMPLEX_QUERY`, this is already wrapped as an inline view with alias `SRC`
+- `{complex_source_note}`: special handling note for `MAP_TYPE=COMPLEX`
 - `{retry_context}`: previous error and previous SQL block during retry. Empty on the first attempt
 - `{last_error}`: previous error message during retry. Empty on the first attempt
 - `{last_sql}`: previous failed SQL during retry. Empty on the first attempt
@@ -45,14 +49,23 @@ Generate Oracle 19c migration SQL using only the provided mapping rules and DDL 
    - The source filter condition may already start with `WHERE`. If it does, use it as-is.
    - If the source filter condition does not start with `WHERE`, add exactly one `WHERE` before it.
    - If the source filter condition is blank, omit the WHERE clause entirely.
+7. COMPLEX source handling:
+   - Source kind is `{source_kind}`.
+   - If source kind is `COMPLEX_QUERY`, FR_TABLE is already a complete source SELECT/WITH query, not a physical table.
+   - For COMPLEX_QUERY, use `{source_from_clause}` exactly as the source in the FROM clause.
+   - For COMPLEX_QUERY, select mapped FR_COL values from alias `SRC`.
+   - For COMPLEX_QUERY, do not rewrite the source query, do not invent joins, and do not look for source columns outside the virtual source query.
 
 {ddl_info_block}
 
 {retry_context}
 
+{complex_source_note}
+
 [Mapping rules]
 - Source table: {from_table}
 - Target table: {to_table}
+- Source from clause: {source_from_clause}
 - Source filter condition: {condition}
 - Column mappings:
 {mapping_info}
@@ -60,7 +73,7 @@ Generate Oracle 19c migration SQL using only the provided mapping rules and DDL 
 [Recommended shape]
 INSERT INTO {to_table} (target_columns...)
 SELECT source_expressions...
-FROM {from_table}
+FROM {source_from_clause}
 [optional source filter condition, with exactly one WHERE keyword when needed]
 
 [JSON shape]
@@ -95,6 +108,8 @@ Generate Oracle 19c verification SQL using only the provided mapping rules and D
    - Do not include TRUNCATE, COMMIT, ROLLBACK, INSERT, DELETE, UPDATE, MERGE, DROP, or ALTER.
    - Use one SELECT statement without UNION ALL.
    - Compare total row count and mapped non-null column counts between source and target when possible.
+   - Exclude audit columns from all column-level comparisons: REG_USER_UD, REG_TM, CHG_USER_ID, CHG_TM.
+   - Do not use audit columns in COUNT(column), DISTINCT, GROUP BY, ORDER BY, MINUS, JOIN keys, equality predicates, or value comparisons.
    - Exclude LOB/LONG columns from all verification column-count comparisons: CLOB, NCLOB, BLOB, LONG, LONG RAW.
    - Do not use LOB/LONG columns in COUNT(column), DISTINCT, GROUP BY, ORDER BY, MINUS, JOIN keys, equality predicates, or value comparisons.
 4. Oracle 19c compatibility:
@@ -107,14 +122,23 @@ Generate Oracle 19c verification SQL using only the provided mapping rules and D
    - The source filter condition may already start with `WHERE`. If it does, use it as-is.
    - If the source filter condition does not start with `WHERE`, add exactly one `WHERE` before it.
    - If the source filter condition is blank, omit the WHERE clause entirely.
+6. COMPLEX source handling:
+   - Source kind is `{source_kind}`.
+   - If source kind is `COMPLEX_QUERY`, FR_TABLE is already a complete source SELECT/WITH query, not a physical table.
+   - For COMPLEX_QUERY, use `{source_from_clause}` exactly as the source in the FROM clause.
+   - For COMPLEX_QUERY, compare mapped FR_COL values from alias `SRC` with the target columns.
+   - For COMPLEX_QUERY, do not rewrite the source query, do not invent joins, and do not look for source columns outside the virtual source query.
 
 {ddl_info_block}
 
 {retry_context}
 
+{complex_source_note}
+
 [Mapping rules]
 - Source table: {from_table}
 - Target table: {to_table}
+- Source from clause: {source_from_clause}
 - Source filter condition: {condition}
 - Column mappings:
 {mapping_info}
@@ -126,7 +150,7 @@ SELECT ABS(S.TOT - T.TOT) AS DIFF_TOT,
 FROM (SELECT COUNT(*) TOT,
              COUNT(source_non_lob_col1) C1,
              COUNT(source_non_lob_col2) C2
-      FROM {from_table}
+      FROM {source_from_clause}
       [optional source filter condition, with exactly one WHERE keyword when needed]) S,
      (SELECT COUNT(*) TOT,
              COUNT(target_non_lob_col1) C1,

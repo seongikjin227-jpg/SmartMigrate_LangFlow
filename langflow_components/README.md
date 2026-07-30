@@ -27,6 +27,14 @@ Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코�
 ```
 
 ```json
+{"action":"preview_mig_prompt","map_id":101}
+```
+
+```json
+{"action":"preview_verify_prompt","map_id":101}
+```
+
+```json
 {"action":"run_migration_job","map_id":101}
 ```
 
@@ -40,10 +48,14 @@ Langflow 웹 UI에서 Custom Python Component를 만든 뒤, 이 파일의 코�
 | `get_table_ddl` | `USER_TAB_COLUMNS` 또는 `ALL_TAB_COLUMNS` 기반 테이블 컬럼 메타 조회 |
 | `generate_mig_sql` | LLM으로 MIG_SQL preview 생성, DB 저장 없음 |
 | `generate_verify_sql` | LLM으로 VERIFY_SQL preview 생성, DB 저장 없음 |
+| `preview_mig_prompt` | MIG_SQL 생성용 최종 prompt preview 조회, LLM 호출/DB 저장 없음 |
+| `preview_verify_prompt` | VERIFY_SQL 생성용 최종 prompt preview 조회, LLM 호출/DB 저장 없음 |
 | `reset` | 특정 map_id의 `STATUS`, `RETRY_COUNT`, `BATCH_CNT`를 초기화, SQL은 보존, `confirm=true` 필요 |
 | `save_user_sql` | 사용자가 수정한 MIG_SQL/VERIFY_SQL 저장, `confirm=true` 필요 |
 | `analyze_failure` | 최근 실패 로그와 저장 SQL 조회 |
 | `run_migration_job` | LLM SQL 생성, 저장, 실행, 검증, 상태 저장 전체 사이클 |
+
+`analyze_failure`는 `NEXT_MIG_LOG`를 `CREATED_AT DESC, LOG_ID DESC` 순서로 조회한다. 응답의 `latest_failure_log`를 우선 보고, `recent_logs`는 보조 맥락으로 사용한다.
 
 ## SQL 생성 command
 
@@ -61,6 +73,18 @@ VERIFY_SQL 생성:
 
 `generate_mig_sql`, `generate_verify_sql`은 preview 전용이다. DB에 SQL을 저장하지 않고 생성 결과만 반환한다.
 LLM 생성이 실패하면 fallback 없이 실패한다.
+
+치환 완료 prompt 확인:
+
+```json
+{"action":"preview_mig_prompt","map_id":101}
+```
+
+```json
+{"action":"preview_verify_prompt","map_id":101}
+```
+
+이 action들은 LLM을 호출하지 않고 DB도 업데이트하지 않는다. Langflow prompt input의 `{ddl_info_block}`, `{mapping_info}`, `{source_from_clause}` 같은 placeholder가 실제 값으로 바뀐 최종 prompt를 확인할 때 사용한다.
 
 사용자 수정 SQL 보호 정책:
 
@@ -84,6 +108,7 @@ LLM 생성이 실패하면 fallback 없이 실패한다.
 - `PRIOR_MAP_ID`가 있고 선행 작업이 `PASS`가 아니면 SQL 생성도 진행하지 않는다.
 - 같은 `TO_TABLE`에서 현재 job보다 `PRIORITY`가 낮은 선행 작업이 모두 `PASS`여야 진행한다.
 - `NEXT_MIG_INFO_DTL.TO_COL`이 비어 있는 매핑은 target insert 컬럼에서 제외한다. 이 값은 스킵되었거나 다른 expression에 합쳐진 컬럼으로 본다.
+- `MAP_TYPE=COMPLEX`인 경우 `FR_TABLE`은 물리 테이블명이 아니라 완성된 source `SELECT` 또는 `WITH` query로 본다. 프롬프트에서는 `{source_from_clause}`를 `FROM` 뒤에 그대로 사용하고, 컬럼은 `SRC.FR_COL` 형태로 참조하게 한다.
 - LLM 프롬프트는 파일에서 읽지 않는다. Langflow input인 `mig_sql_prompt`, `verify_sql_prompt` 두 개로 받는다.
 - `MIG_SQL`에 저장되는 값은 단일 `INSERT` 문이어야 한다.
 - `MIG_SQL`에는 `TRUNCATE`, `COMMIT`, `ROLLBACK`, `DELETE`, `UPDATE`, `MERGE`, `DROP`, `ALTER`를 저장하지 않는다.

@@ -104,13 +104,13 @@ class MigrationCommandTool(Component):
             name="mig_sql_prompt",
             display_name="MIG SQL Prompt",
             required=False,
-            info="Prompt template for generate_mig_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}, {retry_context}, {last_error}, {last_sql}.",
+            info="Prompt template for generate_mig_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}, {source_kind}, {source_query}, {source_from_clause}, {complex_source_note}, {retry_context}, {last_error}, {last_sql}.",
         ),
         MessageTextInput(
             name="verify_sql_prompt",
             display_name="VERIFY SQL Prompt",
             required=False,
-            info="Prompt template for generate_verify_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}, {retry_context}, {last_error}, {last_sql}.",
+            info="Prompt template for generate_verify_sql. Use placeholders: {ddl_info_block}, {from_table}, {to_table}, {mapping_info}, {condition}, {source_kind}, {source_query}, {source_from_clause}, {complex_source_note}, {retry_context}, {last_error}, {last_sql}.",
         ),
         StrInput(
             name="system_schema",
@@ -173,6 +173,10 @@ class MigrationCommandTool(Component):
                 result = self._generate_mig_sql(map_id, command)
             elif action == "generate_verify_sql":
                 result = self._generate_verify_sql(map_id, command)
+            elif action == "preview_mig_prompt":
+                result = self._preview_sql_prompt(map_id, command, prompt_kind="mig")
+            elif action == "preview_verify_prompt":
+                result = self._preview_sql_prompt(map_id, command, prompt_kind="verify")
             elif action == "reset":
                 result = self._reset(map_id)
             elif action == "save_user_sql":
@@ -576,15 +580,39 @@ class MigrationCommandTool(Component):
                 f"""
                 SELECT LOG_ID, LOG_TYPE, LOG_LEVEL, STEP_NAME, STATUS, MESSAGE,
                        GENERATE_SQL,
-                       TO_CHAR(COALESCE(UPD_TS, CREATED_AT), 'YYYY-MM-DD HH24:MI:SS') AS LOG_TIME
+                       TO_CHAR(CREATED_AT, 'YYYY-MM-DD HH24:MI:SS') AS LOG_TIME
                 FROM {log_table}
                 WHERE MAP_ID = :1
-                ORDER BY LOG_ID DESC
+                ORDER BY CREATED_AT DESC, LOG_ID DESC
                 FETCH FIRST 10 ROWS ONLY
                 """,
                 [map_id],
             )
             rows = cur.fetchall()
+
+        recent_logs = [
+            {
+                "log_id": r[0],
+                "log_type": self._to_text(r[1]),
+                "log_level": self._to_text(r[2]),
+                "step_name": self._to_text(r[3]),
+                "status": self._to_text(r[4]),
+                "message": self._to_text(r[5]),
+                "generate_sql": self._to_text(r[6]),
+                "log_time": self._to_text(r[7]),
+            }
+            for r in rows
+        ]
+        latest_failure_log = next(
+            (
+                log
+                for log in recent_logs
+                if log["log_level"].upper() == "ERROR"
+                or log["status"].upper().startswith("FAIL")
+                or log["log_type"].upper() in {"ROW_ERROR", "JOB_FAIL"}
+            ),
+            None,
+        )
 
         return {
             "ok": True,
@@ -599,19 +627,8 @@ class MigrationCommandTool(Component):
                 "elapsed_seconds": job_row[4],
                 "upd_ts": self._to_text(job_row[5]),
             },
-            "recent_logs": [
-                {
-                    "log_id": r[0],
-                    "log_type": self._to_text(r[1]),
-                    "log_level": self._to_text(r[2]),
-                    "step_name": self._to_text(r[3]),
-                    "status": self._to_text(r[4]),
-                    "message": self._to_text(r[5]),
-                    "generate_sql": self._to_text(r[6]),
-                    "log_time": self._to_text(r[7]),
-                }
-                for r in rows
-            ],
+            "latest_failure_log": latest_failure_log,
+            "recent_logs": recent_logs,
         }
 
     def _generate_mig_sql(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
@@ -759,6 +776,34 @@ class MigrationCommandTool(Component):
             command=command,
         )
 
+    def _preview_sql_prompt(self, map_id: Any, command: dict[str, Any], prompt_kind: str) -> dict[str, Any]:
+        map_id = self._require_map_id(map_id)
+        job = self._load_job(map_id)
+        if not job:
+            return {"ok": False, "map_id": map_id, "error": "job not found"}
+        details = self._load_details(map_id)
+        if prompt_kind == "mig":
+            prompt = self._migration_sql_prompt(job, details, command)
+            action = "preview_mig_prompt"
+        elif prompt_kind == "verify":
+            prompt = self._verify_sql_prompt(job, details, command)
+            action = "preview_verify_prompt"
+        else:
+            return {"ok": False, "map_id": map_id, "error": f"Unsupported prompt_kind: {prompt_kind}"}
+
+        source_context = self._build_source_context(job)
+        return {
+            "ok": True,
+            "action": action,
+            "map_id": map_id,
+            "prompt_kind": prompt_kind,
+            "source_kind": source_context["source_kind"],
+            "prompt_length": len(prompt),
+            "prompt": prompt,
+            "db_updated": False,
+            "llm_called": False,
+        }
+
     def _render_sql_prompt(
         self,
         template: str,
@@ -766,8 +811,9 @@ class MigrationCommandTool(Component):
         details: list[dict[str, Any]],
         command: dict[str, Any],
     ) -> str:
+        source_context = self._build_source_context(job)
         to_table = self._qualify_table(job.get("to_table", ""), self.target_schema)
-        from_table = self._qualify_source_expression(job.get("fr_table", ""))
+        from_table = source_context["from_table"]
         mapping_info = self._format_mapping_info(details)
         ddl_info_block = self._build_ddl_info_block(from_table, to_table)
         last_error = str(command.get("last_error") or "").strip()
@@ -780,6 +826,10 @@ class MigrationCommandTool(Component):
             to_table=to_table,
             mapping_info=mapping_info,
             condition=str(job.get("condition") or "").strip(),
+            source_kind=source_context["source_kind"],
+            source_query=source_context["source_query"],
+            source_from_clause=source_context["source_from_clause"],
+            complex_source_note=source_context["complex_source_note"],
             retry_context=retry_context,
             last_error=last_error,
             last_sql=last_sql,
@@ -833,6 +883,38 @@ class MigrationCommandTool(Component):
                 columns = f"Unable to load columns: {exc}"
             blocks.append(f"- {label} {table_name}:\n{columns}")
         return "\n".join(blocks)
+
+    def _build_source_context(self, job: dict[str, Any]) -> dict[str, str]:
+        map_type = str(job.get("map_type") or "").strip().upper()
+        raw_source = str(job.get("fr_table") or "").strip()
+        qualified_source = self._qualify_source_expression(raw_source)
+        if map_type == "COMPLEX":
+            source_query = self._strip_wrapping_semicolon(qualified_source)
+            source_from_clause = f"(\n{source_query}\n) SRC"
+            return {
+                "source_kind": "COMPLEX_QUERY",
+                "source_query": source_query,
+                "source_from_clause": source_from_clause,
+                "from_table": source_from_clause,
+                "complex_source_note": (
+                    "MAP_TYPE=COMPLEX. FR_TABLE is a complete source SELECT/WITH query, not a physical table. "
+                    "Use it as an inline view exactly once in the FROM clause, and reference mapped FR_COL values from alias SRC. "
+                    "Do not rebuild the source query or search for physical source columns outside this query."
+                ),
+            }
+        return {
+            "source_kind": "TABLE_OR_JOIN",
+            "source_query": qualified_source,
+            "source_from_clause": qualified_source,
+            "from_table": qualified_source,
+            "complex_source_note": "",
+        }
+
+    def _strip_wrapping_semicolon(self, sql: str) -> str:
+        text = str(sql or "").strip()
+        while text.endswith(";"):
+            text = text[:-1].rstrip()
+        return text
 
     def _table_columns_for_prompt(self, table_name: str) -> str:
         clean = str(table_name or "").strip()
