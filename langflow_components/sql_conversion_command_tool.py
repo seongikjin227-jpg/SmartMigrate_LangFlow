@@ -21,7 +21,7 @@ class SqlConversionCommandTool(Component):
 
     _db_cache: dict[str, Any] = {}
 
-    # ==================== 입력 정의 : DB/LLM 연결 정보와 command JSON을 입력받습니다. ====================
+    # ==================== ???놁졑 ?筌먦끉踰?: DB/LLM ??⑤슡???筌먲퐢沅?? command JSON?????놁졑?꾩룇猷????덈펲. ====================
     inputs = [
         MessageTextInput(
             name="command_json",
@@ -83,13 +83,13 @@ class SqlConversionCommandTool(Component):
         ),
     ]
 
-    # ==================== 출력 정의 : Action들의 결과를 담은 result JSON 반환합니다. ====================
+    # ==================== ?怨쀫츊???筌먦끉踰?: Action???깅꺄 ?롪퍒???좊ご???? result JSON ?꾩룇瑗???紐껊퉵?? ====================
     outputs = [
         Output(display_name="Result", name="result", method="run_command"),
     ]
 
-    # ==================== 액션 코드 ====================
-    # 새로운 액션을 추가하려면 run_command() 메서드에 elif 블록을 추가하고, 따로 함수를 만들어서 해당 액션에 대한 내부 메서드를 구현합니다.
+    # ==================== ???떷??袁⑤?獄?====================
+    # ???됱Ŧ?????떷???怨뺣뼺???濡?졎嶺?run_command() 嶺뚮∥?꾥땻??戮?뱺 elif ??곕?餓???怨뺣뼺????겶? ??⑤벡夷???貫???嶺뚮씭??キ??怨댄맋 ????????떷?????????? 嶺뚮∥?꾥땻??? ??뚮뿭寃??紐껊퉵??
     def run_command(self) -> Data:
         try:
             command = self._parse_command()
@@ -112,13 +112,13 @@ class SqlConversionCommandTool(Component):
 
             self.status = result
             return Data(data=result)
-        # Exception의 경우에는 result = {"ok": False ..}로 반환하고, 에러 메시지를 포함한 결과를 반환합니다.
+        # Exception???롪퍔?????裕?result = {"ok": False ..}???꾩룇瑗????겶? ?????嶺뚮∥???낆??????????롪퍒???좊ご??꾩룇瑗???紐껊퉵??
         except Exception as exc:
             result = {"ok": False, "error": str(exc)}
             self.status = result
             return Data(data=result)
 
-    # action="test_connection": DB와 LLM 연결을 확인한다.
+    # action="test_connection": DB?? LLM ??⑤슡????筌먦끉逾??類ｋ펲.
     def _test_connection(self) -> dict[str, Any]:
         try:
             result = self._get_db().run("SELECT 1 AS OK FROM DUAL", include_columns=True)
@@ -128,12 +128,12 @@ class SqlConversionCommandTool(Component):
 
         api_key = str(self.llm_api_key or "").strip()
         model = str(self.llm_model or "").strip()
-        # false 반환 case
+        # false ?꾩룇瑗??case
         if not api_key:
             llm_result = {"ok": False, "message": "LLM API key is empty"}
         elif not model:
             llm_result = {"ok": False, "message": "LLM model is empty"}
-        # true 반환 case
+        # true ?꾩룇瑗??case
         else:
             try:
                 base_url = str(self.llm_base_url or "https://api.openai.com/v1").strip().rstrip("/")
@@ -160,12 +160,12 @@ class SqlConversionCommandTool(Component):
             "llm": llm_result,
         }
 
-    # action="status": space_nm/sql_id 기준 SQL Conversion 작업 1건을 조회한다.
+    # action="status": space_nm/sql_id ?リ옇?? SQL Conversion ??얜???1濾곌쑬????브퀗????類ｋ펲.
     def _status(self, command: dict[str, Any]) -> dict[str, Any]:
         job = self._load_job(command)
         return {"ok": bool(job), "job": job, "error": "" if job else "job not found"}
 
-    # action="list_pending": SQL Conversion 작업 후보를 조회한다.
+    # action="list_pending": SQL Conversion ??얜????熬곣뫀沅???브퀗????類ｋ펲.
     def _list_pending(self, limit: Any) -> dict[str, Any]:
         safe_limit = max(1, min(int(limit or 20), 100))
         table = self._qualify_table("NEXT_SQL_INFO", self.system_schema)
@@ -205,17 +205,19 @@ class SqlConversionCommandTool(Component):
         ]
         return {"ok": True, "count": len(jobs), "jobs": jobs}
 
-    # action="generate_to_sql_text": FROM SQL을 TO-BE SQL로 변환한다.
+    # action="generate_to_sql_text": FROM SQL??TO-BE SQL???곌떠???臾먮┰??
     def _generate_to_sql_text(self, command: dict[str, Any]) -> dict[str, Any]:
         job = self._load_job(command)
         if not job:
             return {"ok": False, "error": "job not found"}
 
-        source_sql = str(job.get("edit_fr_sql") or job.get("fr_sql_text") or "").strip()
+        edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
+        fr_sql_text = str(job.get("fr_sql_text") or "").strip()
+        source_sql = edit_fr_sql if edit_fr_sql else fr_sql_text
         if not source_sql:
             return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "source SQL is empty"}
 
-        # NEXT_SQL_INFO.TARGET_TABLE에서 FR_TABLE 후보를 뽑고, 해당 FR_TABLE 기준의 map_id와 RAG rule만 prompt에 넣는다.
+        # TARGET_TABLE 疫꿸퀣? mapping context??筌띾슢諭얏?LLM???袁⑤뼎??prompt?????쐭筌띻낱釉??
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._render_to_sql_prompt(
             from_sql=source_sql,
@@ -239,17 +241,21 @@ class SqlConversionCommandTool(Component):
             "to_sql_text": to_sql_text,
         }
 
-    # action="preview_conversion_prompt": TO_SQL_TEXT 생성에 실제로 들어갈 prompt를 미리 확인한다.
+    # action="preview_conversion_prompt": command?癒?퐣 space_nm/sql_id??獄쏆룇釉?conversion prompt??沃섎챶???類ㅼ뵥??뺣뼄.
     def _preview_conversion_prompt(self, command: dict[str, Any]) -> dict[str, Any]:
+        # command??space_nm/sql_id嚥?NEXT_SQL_INFO ?臾믩씜??鈺곌퀬???뺣뼄.
         job = self._load_job(command)
         if not job:
             return {"ok": False, "error": "job not found"}
 
-        source_sql = str(job.get("edit_fr_sql") or job.get("fr_sql_text") or "").strip()
+        # EDIT_FR_SQL????됱몵筌??怨쀪퐨 ?????랁? ??곸몵筌?FR_SQL_TEXT???????뺣뼄.
+        edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
+        fr_sql_text = str(job.get("fr_sql_text") or "").strip()
+        source_sql = edit_fr_sql if edit_fr_sql else fr_sql_text
         if not source_sql:
             return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "source SQL is empty"}
 
-        # generate_to_sql_text와 같은 재료를 사용해서 LLM 호출 없이 최종 prompt만 반환한다.
+        # TARGET_TABLE 疫꿸퀣? mapping context??筌띾슢諭얏? LLM ?紐꾪뀱 ??곸뵠 筌ㅼ뮇伊?prompt筌?獄쏆꼹???뺣뼄.
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._render_to_sql_prompt(
             from_sql=source_sql,
@@ -274,13 +280,17 @@ class SqlConversionCommandTool(Component):
             "rag_rule_count": rag_rule_count,
         }
 
-    # action="preview_verify_prompt": 변환 SQL 검증 prompt를 미리 확인한다.
+    # action="preview_verify_prompt": command?癒?퐣 space_nm/sql_id?? to_sql_text??獄쏆룇釉?野꺜筌?prompt??沃섎챶???類ㅼ뵥??뺣뼄.
     def _preview_verify_prompt(self, command: dict[str, Any]) -> dict[str, Any]:
+        # command??space_nm/sql_id嚥?NEXT_SQL_INFO ?臾믩씜??鈺곌퀬???뺣뼄.
         job = self._load_job(command)
         if not job:
             return {"ok": False, "error": "job not found"}
 
-        source_sql = str(job.get("edit_fr_sql") or job.get("fr_sql_text") or "").strip()
+        # EDIT_FR_SQL????됱몵筌??怨쀪퐨 ?????랁? ??곸몵筌?FR_SQL_TEXT???????뺣뼄.
+        edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
+        fr_sql_text = str(job.get("fr_sql_text") or "").strip()
+        source_sql = edit_fr_sql if edit_fr_sql else fr_sql_text
         to_sql_text = str(command.get("to_sql_text") or job.get("to_sql_text") or "").strip()
         if not source_sql:
             return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "source SQL is empty"}
@@ -292,7 +302,7 @@ class SqlConversionCommandTool(Component):
                 "error": "to_sql_text is required for preview_verify_prompt",
             }
 
-        # 검증 prompt도 같은 mapping context를 넣어서 어떤 기준으로 비교할지 확인할 수 있게 한다.
+        # TARGET_TABLE 疫꿸퀣? mapping context???節뚮선????堉?疫꿸퀣???곗쨮 野꺜筌앹빜釉뤄쭪? ?類ㅼ뵥??????뉗쓺 ??뺣뼄.
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._render_verify_prompt(
             from_sql=source_sql,
@@ -319,11 +329,11 @@ class SqlConversionCommandTool(Component):
         }
 
     # ======================================================================
-    # 공통 코드
+    # ??ㅻ쾹???袁⑤?獄?
     # ======================================================================
     def _parse_command(self) -> dict[str, Any]:
-        # Langflow Agent가 넘긴 command_json 문자열을 dict로 변환한다.
-        # 여기서 action/space_nm/sql_id 같은 실행 파라미터가 처음 해석된다.
+        # Langflow Agent?띠럾? ???얄뵺 command_json ??쒖굣???怨몃굵 dict???곌떠???臾먮┰??
+        # ?????action/space_nm/sql_id ?띠룇?? ???덈뺄 ???逾ф쾬?롮구?묕퐛泥? 嶺뚳퐣瑗????怨댄맍??類ｋ펲.
         raw = self.command_json
         if isinstance(raw, dict):
             return raw
@@ -425,17 +435,30 @@ class SqlConversionCommandTool(Component):
             "upd_ts": self._to_text(row[15]),
         }
 
+    # TARGET_TABLE???ㅼ뼱?덈뒗 FR_TABLE 湲곗??쇰줈 migration mapping怨?SQL conversion RAG瑜?prompt??text濡?留뚮뱺??
     def _build_mapping_schema_text(self, job: dict[str, Any]) -> tuple[str, list[int], list[str], int]:
-        # TARGET_TABLE에 들어있는 FR_TABLE 목록만 사용한다. SQL 본문에서 table명을 추측하지 않는다.
+        # TARGET_TABLE??鍮꾩뼱 ?덉쑝硫?SQL 蹂몃Ц?먯꽌 table紐낆쓣 異붿륫?섏? ?딄퀬 鍮?context瑜?諛섑솚?쒕떎.
         fr_tables = self._extract_target_fr_tables(job.get("target_table"))
+        if not fr_tables:
+            sections = [
+                "[TARGET_TABLE_FR_TABLE_HINTS]",
+                "  - No FR_TABLE hints found.",
+                "\n[MIGRATION_MAP_IDS]",
+                "  - No MAP_ID found because TARGET_TABLE is empty.",
+                "\n[MIGRATION_MAPPING_RULES]",
+                "  - No mapping rules found because TARGET_TABLE is empty.",
+                "\n[UNMAPPED_FR_TABLES]",
+                "  - None.",
+                "\n[SQL_CONVERSION_RAG_GUIDANCE]",
+                "  - No FR_TABLE hints for SQL_CONVERSION RAG lookup.",
+            ]
+            return "\n".join(sections), [], [], 0
+
         normalized_fr_tables = {self._normalize_table_name(name) for name in fr_tables if self._normalize_table_name(name)}
 
         sections = ["[TARGET_TABLE_FR_TABLE_HINTS]"]
-        if fr_tables:
-            for table_name in fr_tables:
-                sections.append(f"  - {table_name}")
-        else:
-            sections.append("  - No FR_TABLE hints found.")
+        for table_name in fr_tables:
+            sections.append(f"  - {table_name}")
 
         sections.append("\n[MIGRATION_MAP_IDS]")
         map_ids: list[int] = []
@@ -455,12 +478,15 @@ class SqlConversionCommandTool(Component):
             rows = cur.fetchall()
 
         matched_rows = []
+        matched_fr_tables: set[str] = set()
         for row in rows:
             map_id, map_type, fr_table, fr_col, to_table, to_col, condition = row
             fr_table_text = self._to_text(fr_table)
-            if normalized_fr_tables and self._normalize_table_name(fr_table_text) not in normalized_fr_tables:
+            normalized_fr_table = self._normalize_table_name(fr_table_text)
+            if normalized_fr_table not in normalized_fr_tables:
                 continue
             matched_rows.append((map_id, map_type, fr_table, fr_col, to_table, to_col, condition))
+            matched_fr_tables.add(normalized_fr_table)
             if map_id is not None and int(map_id) not in map_ids:
                 map_ids.append(int(map_id))
 
@@ -469,6 +495,16 @@ class SqlConversionCommandTool(Component):
                 sections.append(f"  - {map_id}")
         else:
             sections.append("  - No MAP_ID found for FR_TABLE hints.")
+
+        unmatched_fr_tables = [
+            table_name for table_name in fr_tables if self._normalize_table_name(table_name) not in matched_fr_tables
+        ]
+        sections.append("\n[UNMAPPED_FR_TABLES]")
+        if unmatched_fr_tables:
+            for table_name in unmatched_fr_tables:
+                sections.append(f"  - {table_name}: no mapping rule found. Keep the original table/column names.")
+        else:
+            sections.append("  - None.")
 
         sections.append("\n[MIGRATION_MAPPING_RULES]")
         if not matched_rows:
@@ -538,7 +574,9 @@ class SqlConversionCommandTool(Component):
         correct_sql_hint_json: str,
         last_error: str,
     ) -> str:
-        template = self._require_prompt("to_sql_prompt", "TO SQL Prompt")
+        template = str(self.to_sql_prompt or "").strip()
+        if not template:
+            raise ValueError("TO SQL Prompt input is required for SQL generation")
         values = {
             "from_sql": from_sql,
             "mapping_schema_text": mapping_schema_text,
@@ -561,7 +599,9 @@ class SqlConversionCommandTool(Component):
         correct_sql_hint_json: str,
         last_error: str,
     ) -> str:
-        template = self._require_prompt("verify_sql_prompt", "VERIFY SQL Prompt")
+        template = str(self.verify_sql_prompt or "").strip()
+        if not template:
+            raise ValueError("VERIFY SQL Prompt input is required for SQL generation")
         values = {
             "from_sql": from_sql,
             "to_sql_text": to_sql_text,
@@ -573,12 +613,6 @@ class SqlConversionCommandTool(Component):
         }
         for key, value in values.items():
             template = template.replace("{" + key + "}", str(value))
-        return template
-
-    def _require_prompt(self, attr_name: str, display_name: str) -> str:
-        template = str(getattr(self, attr_name, "") or "").strip()
-        if not template:
-            raise ValueError(f"{display_name} input is required")
         return template
 
     def _call_llm(self, prompt: str) -> str:

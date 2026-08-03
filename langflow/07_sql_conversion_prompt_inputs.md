@@ -39,15 +39,16 @@ source result set을 유지하면서 TO-BE schema mapping을 따르는 실행 �
 [반드시 지켜야 할 규칙]
 1. Oracle 19c 호환 SQL을 생성한다. LIMIT 같은 non-Oracle 문법은 사용하지 않는다.
 2. `[MIGRATION_MAPPING_RULES]`를 table과 column mapping의 1차 기준으로 사용한다.
-3. mapping rule이 없으면 원래 table명 또는 column명을 유지하고, 그 이유만으로 SQL 생성을 건너뛰지 않는다.
-4. `NEXT_MIG_RAG_INFO` guidance는 pattern hint로만 사용한다. 현재 SQL과 충돌하면 복사하지 않는다.
-5. `#{param}`, `${param}` 같은 MyBatis bind marker와 dynamic tag는 유지한다.
-6. 출력 SQL의 물리 TO-BE table에는 `target_schema`가 비어 있지 않을 때 `target_schema.TABLE_NAME` 형식을 적용한다.
-7. DUAL, CTE 이름, alias, subquery alias, MyBatis collection name, bind variable에는 `target_schema`를 붙이지 않는다.
-8. 단순 table/column 치환으로 충분하면 불필요하게 SQL 구조를 다시 작성하지 않는다.
-9. `last_error`가 있으면 같은 실패를 반복하지 않도록 SQL을 수정한다.
-10. 실행 가능한 Oracle/MyBatis SQL template 하나만 반환한다.
-11. 설명, markdown, JSON, PL/SQL block, comment, 여러 SQL statement, trailing semicolon, COMMIT, ROLLBACK을 포함하지 않는다.
+3. `[UNMAPPED_FR_TABLES]`에 있는 table은 mapping rule이 없는 대상이다. 이 table과 column은 원래 이름을 유지한다.
+4. mapping rule이 없으면 원래 table명 또는 column명을 유지하고, 그 이유만으로 SQL 생성을 건너뛰지 않는다.
+5. `NEXT_MIG_RAG_INFO` guidance는 pattern hint로만 사용한다. 현재 SQL과 충돌하면 복사하지 않는다.
+6. `#{param}`, `${param}` 같은 MyBatis bind marker와 dynamic tag는 유지한다.
+7. 출력 SQL의 물리 TO-BE table에는 `target_schema`가 비어 있지 않을 때 `target_schema.TABLE_NAME` 형식을 적용한다.
+8. DUAL, CTE 이름, alias, subquery alias, MyBatis collection name, bind variable에는 `target_schema`를 붙이지 않는다.
+9. 단순 table/column 치환으로 충분하면 불필요하게 SQL 구조를 다시 작성하지 않는다.
+10. `last_error`가 있으면 같은 실패를 반복하지 않도록 SQL을 수정한다.
+11. 실행 가능한 Oracle/MyBatis SQL template 하나만 반환한다.
+12. 설명, markdown, JSON, PL/SQL block, comment, 여러 SQL statement, trailing semicolon, COMMIT, ROLLBACK을 포함하지 않는다.
 
 TO-BE SQL text만 반환한다.
 ```

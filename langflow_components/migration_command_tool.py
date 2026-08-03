@@ -368,8 +368,11 @@ class MigrationCommandTool(Component):
         llm_error = ""
         # 프롬포트 랜더링 및 LLM 호출
         try:
+            mig_sql_prompt = str(self.mig_sql_prompt or "").strip()
+            if not mig_sql_prompt:
+                raise ValueError("MIG SQL Prompt input is required for SQL generation")
             prompt = self._render_sql_prompt(
-                template=self._require_prompt("mig_sql_prompt", "MIG SQL Prompt"),
+                template=mig_sql_prompt,
                 job=job,
                 details=details,
                 command=command,
@@ -425,8 +428,11 @@ class MigrationCommandTool(Component):
         llm_error = ""
 
         try:
+            verify_sql_prompt = str(self.verify_sql_prompt or "").strip()
+            if not verify_sql_prompt:
+                raise ValueError("VERIFY SQL Prompt input is required for SQL generation")
             prompt = self._render_sql_prompt(
-                template=self._require_prompt("verify_sql_prompt", "VERIFY SQL Prompt"),
+                template=verify_sql_prompt,
                 job=job,
                 details=details,
                 command=command,
@@ -457,16 +463,22 @@ class MigrationCommandTool(Component):
             return {"ok": False, "map_id": map_id, "error": "job not found"}
         details = self._load_details(map_id)
         if prompt_kind == "mig":
+            mig_sql_prompt = str(self.mig_sql_prompt or "").strip()
+            if not mig_sql_prompt:
+                raise ValueError("MIG SQL Prompt input is required for SQL generation")
             prompt = self._render_sql_prompt(
-                template=self._require_prompt("mig_sql_prompt", "MIG SQL Prompt"),
+                template=mig_sql_prompt,
                 job=job,
                 details=details,
                 command=command,
             )
             action = "preview_mig_prompt"
         elif prompt_kind == "verify":
+            verify_sql_prompt = str(self.verify_sql_prompt or "").strip()
+            if not verify_sql_prompt:
+                raise ValueError("VERIFY SQL Prompt input is required for SQL generation")
             prompt = self._render_sql_prompt(
-                template=self._require_prompt("verify_sql_prompt", "VERIFY SQL Prompt"),
+                template=verify_sql_prompt,
                 job=job,
                 details=details,
                 command=command,
@@ -979,12 +991,6 @@ class MigrationCommandTool(Component):
             "If the previous SQL contains duplicate WHERE clauses such as WHERE WHERE, remove the duplicate keyword.\n"
             "When applying the source filter condition, add WHERE only if the condition text does not already start with WHERE."
         )
-
-    def _require_prompt(self, attr_name: str, display_name: str) -> str:
-        value = str(getattr(self, attr_name, "") or "").strip()
-        if not value:
-            raise ValueError(f"{display_name} input is required for SQL generation")
-        return value
 
     def _format_mapping_info(self, details: list[dict[str, Any]]) -> str:
         lines = []
@@ -1545,7 +1551,5 @@ class MigrationCommandTool(Component):
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="ignore")
         return str(value)
-
-
 
 
