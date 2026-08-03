@@ -121,8 +121,8 @@ class SqlConversionCommandTool(Component):
     # action="test_connection": DB와 LLM 연결을 확인한다.
     def _test_connection(self) -> dict[str, Any]:
         try:
-            rows = self._normalize_query_rows(self._get_db().run("SELECT 1 AS OK FROM DUAL", include_columns=True))
-            db_result = {"ok": True, "message": "DB connection OK", "result": rows}
+            result = self._get_db().run("SELECT 1 AS OK FROM DUAL", include_columns=True)
+            db_result = {"ok": True, "message": "DB connection OK", "result": result}
         except Exception as exc:
             db_result = {"ok": False, "message": "DB connection failed", "error": str(exc)}
 
@@ -216,7 +216,7 @@ class SqlConversionCommandTool(Component):
             return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "source SQL is empty"}
 
         # NEXT_SQL_INFO.TARGET_TABLE에서 FR_TABLE 후보를 뽑고, 해당 FR_TABLE 기준의 map_id와 RAG rule만 prompt에 넣는다.
-        mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job, source_sql)
+        mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._render_to_sql_prompt(
             from_sql=source_sql,
             mapping_schema_text=mapping_schema_text,
@@ -250,7 +250,7 @@ class SqlConversionCommandTool(Component):
             return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "source SQL is empty"}
 
         # generate_to_sql_text와 같은 재료를 사용해서 LLM 호출 없이 최종 prompt만 반환한다.
-        mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job, source_sql)
+        mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._render_to_sql_prompt(
             from_sql=source_sql,
             mapping_schema_text=mapping_schema_text,
@@ -293,7 +293,7 @@ class SqlConversionCommandTool(Component):
             }
 
         # 검증 prompt도 같은 mapping context를 넣어서 어떤 기준으로 비교할지 확인할 수 있게 한다.
-        mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job, source_sql)
+        mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._render_verify_prompt(
             from_sql=source_sql,
             to_sql_text=to_sql_text,
@@ -347,7 +347,6 @@ class SqlConversionCommandTool(Component):
         return f"oracle+oracledb://{quote_plus(username)}:{quote_plus(password)}@{host}:{port}/{service_name}"
 
     def _get_db(self):
-        self._ensure_runtime_dependencies()
         from langchain_community.utilities import SQLDatabase
 
         cache_key = "|".join(
@@ -363,11 +362,6 @@ class SqlConversionCommandTool(Component):
         self.db = self._db_cache[cache_key]
         return self.db
 
-    def _ensure_runtime_dependencies(self) -> None:
-        import langchain_community.utilities
-        import oracledb
-        import sqlalchemy
-
     def _post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
         req_headers = {"Content-Type": "application/json", **headers}
@@ -380,19 +374,6 @@ class SqlConversionCommandTool(Component):
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")[:1000]
             raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
-
-    def _normalize_query_rows(self, raw: Any) -> list[dict[str, Any]]:
-        if raw is None or raw == "":
-            return []
-        if isinstance(raw, list):
-            if not raw:
-                return []
-            if isinstance(raw[0], dict):
-                return raw
-            return [{str(i): value for i, value in enumerate(row)} for row in raw]
-        if isinstance(raw, tuple):
-            return [{str(i): value for i, value in enumerate(raw)}]
-        return [{"value": str(raw)}]
 
     @contextmanager
     def _connect(self):
@@ -444,11 +425,9 @@ class SqlConversionCommandTool(Component):
             "upd_ts": self._to_text(row[15]),
         }
 
-    def _build_mapping_schema_text(self, job: dict[str, Any], source_sql: str) -> tuple[str, list[int], list[str], int]:
-        # TARGET_TABLE에 들어있는 FR_TABLE 목록을 우선 사용하고, 값이 없으면 SQL 본문에서 FROM/JOIN table을 추출한다.
+    def _build_mapping_schema_text(self, job: dict[str, Any]) -> tuple[str, list[int], list[str], int]:
+        # TARGET_TABLE에 들어있는 FR_TABLE 목록만 사용한다. SQL 본문에서 table명을 추측하지 않는다.
         fr_tables = self._extract_target_fr_tables(job.get("target_table"))
-        if not fr_tables:
-            fr_tables = self._extract_table_names(source_sql)
         normalized_fr_tables = {self._normalize_table_name(name) for name in fr_tables if self._normalize_table_name(name)}
 
         sections = ["[TARGET_TABLE_FR_TABLE_HINTS]"]
@@ -507,9 +486,6 @@ class SqlConversionCommandTool(Component):
         sections.append("\n[SQL_CONVERSION_RAG_GUIDANCE]")
         rag_lines = self._load_conversion_rag_rules(fr_tables)
         sections.extend(rag_lines)
-        sections.append("\n[CURRENT_SOURCE_SQL_TABLE_HINTS]")
-        for table_name in self._extract_table_names(source_sql):
-            sections.append(f"  - {table_name}")
         rag_rule_count = len([line for line in rag_lines if line.strip().startswith("- {")])
         return "\n".join(sections), map_ids, fr_tables, rag_rule_count
 
@@ -522,19 +498,18 @@ class SqlConversionCommandTool(Component):
             with self._connect() as conn:
                 cur = conn.cursor()
                 for fr_table in fr_tables:
-                    raw_table = str(fr_table or "").strip().upper()
-                    normalized_table = self._normalize_table_name(fr_table)
+                    source_table = str(fr_table or "").strip().upper()
                     cur.execute(
                         f"""
                         SELECT RULE_TYPE, SOURCE_TABLES, GUIDANCE_TEXT, SOURCE_SQL, TARGET_SQL
                         FROM {table}
                         WHERE CATEGORY = 'SQL_CONVERSION'
                           AND UPPER(TRIM(NVL(USE_YN, 'Y'))) = 'Y'
-                          AND UPPER(TRIM(SOURCE_TABLES)) IN (:1, :2)
+                          AND UPPER(TRIM(SOURCE_TABLES)) = :1
                         ORDER BY CASE WHEN RULE_TYPE = 'GENERAL' THEN 1 ELSE 2 END, RAG_ID
                         FETCH FIRST 3 ROWS ONLY
                         """,
-                        [raw_table, normalized_table],
+                        [source_table],
                     )
                     for rule_type, source_tables, guidance, source_sql, target_sql in cur.fetchall():
                         lines.append(
@@ -636,44 +611,19 @@ class SqlConversionCommandTool(Component):
             raise ValueError("LLM returned empty TO_SQL_TEXT")
         return text
 
-    def _extract_table_names(self, sql: str) -> list[str]:
-        names = []
-        for match in re.finditer(r"\b(?:FROM|JOIN)\s+([A-Z0-9_$#.\"]+)", str(sql or ""), flags=re.I):
-            name = match.group(1).strip().strip('"')
-            if name.upper() not in {"SELECT", "DUAL"} and name not in names:
-                names.append(name)
-        return names[:50]
-
     def _extract_target_fr_tables(self, value: Any) -> list[str]:
         text = self._to_text(value).strip()
         if not text:
             return []
-
-        values: list[str] = []
-
-        def append_name(raw: Any) -> None:
-            cleaned = self._to_text(raw).strip().strip("[]{}()'\"")
-            if cleaned and cleaned not in values:
-                values.append(cleaned)
-
-        def collect(raw: Any) -> None:
-            if isinstance(raw, list):
-                for item in raw:
-                    collect(item)
-            elif isinstance(raw, dict):
-                for key in ("FR_TABLE", "fr_table", "SOURCE_TABLES", "source_tables", "TABLE_NAME", "table_name"):
-                    if key in raw:
-                        collect(raw[key])
-            else:
-                for part in re.split(r"[\n,;|]+", self._to_text(raw)):
-                    append_name(part)
-
-        try:
-            parsed = json.loads(text)
-            collect(parsed)
-        except Exception:
-            collect(text)
-        return values[:50]
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            raise ValueError("TARGET_TABLE must be a JSON array like [\"table_a\", \"table_b\"]")
+        names: list[str] = []
+        for table_name in parsed:
+            clean_table = str(table_name or "").strip()
+            if clean_table and clean_table not in names:
+                names.append(clean_table)
+        return names[:50]
 
     def _normalize_table_name(self, value: Any) -> str:
         text = self._to_text(value).strip().strip('"').upper()
