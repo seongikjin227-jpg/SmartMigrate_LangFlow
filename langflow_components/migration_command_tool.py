@@ -629,6 +629,8 @@ class MigrationCommandTool(Component):
 
     # action="run_migration_job": SQL 생성, 실행, 검증까지 전체 사이클을 수행한다.
     def _run_migration_job(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
+
+        # =====_run_migration_job은 사용자가 채팅으로 호출할 수도 있기 때문에 사용자가 요청한 job이 실행 가능한지 검증한다.=====
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
         map_id = int(map_id)
@@ -675,12 +677,14 @@ class MigrationCommandTool(Component):
             job = self._load_job(map_id) or job
             user_edited = str(job.get("user_edited") or "").upper() == "Y"
 
+            # force_regenerate 옵션은 MIG_SQL/VERIFY_SQL을 LLM으로 재생성할지 여부를 결정한다.
             generation_command = {
                 "force_regenerate": command.get("force_regenerate", False),
             }
 
             # last_failure는 다음 retry prompt에 넣을 에러와 실패 status를 보관한다.
             last_failure: dict[str, Any] = {}
+            # mig_executed는 한 번 MIG_SQL 실행에 성공하면 같은 run 안에서 다시 insert하지 않도록 한다.
             mig_executed = False
             last_retry_count = 0
 
@@ -714,7 +718,7 @@ class MigrationCommandTool(Component):
                         # MIG_SQL 생성 실패는 FAIL-INSERT 후보로 기록하고 남은 attempt가 있으면 재시도한다.
                         if not mig_result.get("ok"):
                             last_failure = {"status": "FAIL-INSERT", "error": mig_result.get("error") or "MIG_SQL generation failed"}
-                            self._write_retry_log(map_id, "GENERATE_MIG_SQL", "FAIL-INSERT", str(last_failure["error"]), retry_count)
+                            self._write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "GENERATE_MIG_SQL", "FAIL-INSERT", str(last_failure["error"])[:3900], retry_count)
                             if attempt < max_attempts:
                                 continue
                             break
@@ -742,7 +746,7 @@ class MigrationCommandTool(Component):
                         # INSERT 실행 실패는 다음 attempt에서 MIG_SQL을 재생성할 수 있도록 last_failure에 넣는다.
                         last_failure = {"status": "FAIL-INSERT", "error": str(exc)}
                         steps.append({"step": "execute_mig_sql", "attempt": attempt, "ok": False, **last_failure})
-                        self._write_retry_log(map_id, "SQL_EXEC", "FAIL-INSERT", str(exc), retry_count, str(job.get("mig_sql") or ""))
+                        self._write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "SQL_EXEC", "FAIL-INSERT", str(exc)[:3900], retry_count, str(job.get("mig_sql") or ""))
                         if attempt < max_attempts:
                             continue
                         break
@@ -770,7 +774,7 @@ class MigrationCommandTool(Component):
                     # VERIFY_SQL 생성 실패는 검증 실패 단계로 보고 남은 attempt가 있으면 재시도한다.
                     if not verify_result.get("ok"):
                         last_failure = {"status": "FAIL-TEST", "error": verify_result.get("error") or "VERIFY_SQL generation failed"}
-                        self._write_retry_log(map_id, "GENERATE_VERIFY_SQL", "FAIL-TEST", str(last_failure["error"]), retry_count)
+                        self._write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "GENERATE_VERIFY_SQL", "FAIL-TEST", str(last_failure["error"])[:3900], retry_count)
                         if attempt < max_attempts:
                             continue
                         break
@@ -812,7 +816,7 @@ class MigrationCommandTool(Component):
 
                     # 검증 결과가 ok=False이면 FAIL-TEST 후보로 기록하고 남은 attempt가 있으면 재시도한다.
                     last_failure = {"status": "FAIL-TEST", "error": verify_exec_result.get("message") or "Verification failed"}
-                    self._write_retry_log(map_id, "VERIFY", "FAIL-TEST", str(last_failure["error"]), retry_count, verify_exec_result.get("verify_sql"))
+                    self._write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "VERIFY", "FAIL-TEST", str(last_failure["error"])[:3900], retry_count, verify_exec_result.get("verify_sql"))
                     if attempt < max_attempts:
                         continue
                     break
@@ -820,7 +824,7 @@ class MigrationCommandTool(Component):
                     # 검증 SQL 실행 자체가 예외를 내도 FAIL-TEST 후보로 기록한다.
                     last_failure = {"status": "FAIL-TEST", "error": str(exc)}
                     steps.append({"step": "execute_verify_sql", "attempt": attempt, "ok": False, **last_failure})
-                    self._write_retry_log(map_id, "VERIFY", "FAIL-TEST", str(exc), retry_count, str(job.get("verify_sql") or ""))
+                    self._write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "VERIFY", "FAIL-TEST", str(exc)[:3900], retry_count, str(job.get("verify_sql") or ""))
                     if attempt < max_attempts:
                         continue
                     break
@@ -1386,26 +1390,6 @@ class MigrationCommandTool(Component):
             if key in result:
                 summary[key] = result.get(key)
         return summary
-
-    def _write_retry_log(
-        self,
-        map_id: int,
-        step_name: str,
-        status: str,
-        message: str,
-        retry_count: int,
-        generate_sql: str | None = None,
-    ) -> None:
-        self._write_log(
-            map_id,
-            "ROW_ERROR",
-            "WARN",
-            "RETRY" if retry_count > 0 else step_name,
-            status,
-            str(message or "")[:3900],
-            retry_count,
-            generate_sql,
-        )
 
     def _truncate_target(self, job: dict[str, Any]) -> None:
         target = self._qualify_table(job["to_table"], self.target_schema)
