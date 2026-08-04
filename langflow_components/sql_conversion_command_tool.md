@@ -24,7 +24,7 @@ Do not ask users for `row_id`. `row_id` is hard to identify in conversation and 
 {"action":"list_pending","limit":5}
 ```
 
-`limit`을 생략하면 기본 20건을 조회한다. 최소 1건, 최대 100건으로 제한된다.
+`limit`???앸왂?섎㈃ 湲곕낯 20嫄댁쓣 議고쉶?쒕떎. 理쒖냼 1嫄? 理쒕? 100嫄댁쑝濡??쒗븳?쒕떎.
 
 ```json
 {"action":"status","space_nm":"SFA","sql_id":"selectUser"}
@@ -112,6 +112,20 @@ The component replaces these placeholders internally before calling the LLM.
 - `preview_conversion_prompt` and `preview_verify_prompt` do not update DB and do not call LLM.
 - `generate_to_sql_text` ignores DB save flow; `run_sql_conversion` will handle final persistence when it is implemented.
 
+## Run SQL Conversion Design Notes
+
+`NEXT_SQL_INFO` is shared by SQL Conversion, SQL Tuning, and SQL Formatting.
+Do not add conversion-only runtime columns such as `ELAPSED_SECONDS` to `NEXT_SQL_INFO`.
+
+When `run_sql_conversion` is implemented:
+
+- Use `NEXT_SQL_INFO` for the latest job state and final SQL result only.
+- Update `NEXT_SQL_INFO.TO_SQL_TEXT` only at the final persistence point of `run_sql_conversion`.
+- Update `NEXT_SQL_INFO.STATUS_CONVERSION`, `LOG`, `BATCH_CNT`, and `UPD_TS` as the shared job state fields.
+- Store action/run-level execution details in `NEXT_SQL_LOG`.
+- Store `elapsed_seconds` in `NEXT_SQL_LOG.ELAPSED_SECONDS`, not in `NEXT_SQL_INFO`.
+- Keep retry/failure details, generated SQL snapshots, and run messages in `NEXT_SQL_LOG`.
+- Treat `generate_to_sql_text` and prompt preview actions as preview-only. They must not update DB.
 ## Current Scope
 
 Implemented:

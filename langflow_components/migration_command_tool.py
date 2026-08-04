@@ -24,7 +24,7 @@ class MigrationCommandTool(Component):
 
     _db_cache: dict[str, Any] = {}
 
-    # ==================== 입력 정의 : DB/LLM 연결 정보와 command JSON을 입력받습니다. ====================
+    # ==================== 입력 정의: DB/LLM 연결 정보와 command JSON을 입력받는다. ====================
     inputs = [
         MessageTextInput(
             name="command_json",
@@ -130,13 +130,13 @@ class MigrationCommandTool(Component):
         ),
     ]
 
-    # ==================== 출력 정의 : Action들의 결과를 담은 result JSON 반환합니다. ====================
+    # ==================== 출력 정의: action 처리 결과를 result JSON으로 반환한다. ====================
     outputs = [
         Output(display_name="Result", name="result", method="run_command"),
     ]
 
     # ==================== 액션 코드 ====================
-    # 새로운 액션을 추가하려면 run_command() 메서드에 elif 블록을 추가하고, 따로 함수를 만들어서 해당 액션에 대한 내부 메서드를 구현합니다.
+    # Langflow에서 받은 action 값을 if/elif로 분기한다.
     def run_command(self) -> Data:
         try:
             command = self._parse_command()
@@ -172,13 +172,12 @@ class MigrationCommandTool(Component):
 
             self.status = result
             return Data(data=result)
-        #Exception의 경우에는 result = {"ok": False ..}로 반환하고, 에러 메시지를 포함한 결과를 반환합니다.
         except Exception as exc: 
             result = {"ok": False, "error": str(exc)}
             self.status = result
             return Data(data=result)
 
-    # action="test_connection": DB와 LLM 연결을 확인한다.
+    # action="test_connection": DB와 LLM 연결 상태를 확인한다.
     def _test_connection(self) -> dict[str, Any]:
         try:
             rows = self._normalize_query_rows(self._get_db().run("SELECT 1 AS OK FROM DUAL", include_columns=True))
@@ -188,12 +187,10 @@ class MigrationCommandTool(Component):
 
         api_key = str(self.llm_api_key or "").strip()
         model = str(self.llm_model or "").strip()
-        #false 반환 case
         if not api_key:
             llm_result = {"ok": False, "message": "LLM API key is empty"}
         elif not model:
             llm_result = {"ok": False, "message": "LLM model is empty"}
-        #true 반환 case
         else:
             try:
                 base_url = str(self.llm_base_url or "https://api.openai.com/v1").strip().rstrip("/")
@@ -299,8 +296,6 @@ class MigrationCommandTool(Component):
             """
         rows = self._normalize_query_rows(self._get_db().run(query, include_columns=True))
 
-        # get_table_ddl 전용 row 값 추출 함수.
-        # SQLDatabase.run() 결과 key 대소문자가 환경마다 달라질 수 있어 여기서만 보정한다.
         def column_value(row: dict[str, Any], key: str) -> Any:
             if key in row:
                 return row[key]
@@ -329,17 +324,14 @@ class MigrationCommandTool(Component):
             "columns": columns,
         }
 
-    # action="generate_mig_sql": MIG_SQL을 생성한다.
+    # action="generate_mig_sql": MIG_SQL을 생성해서 채팅 응답으로 반환한다.
     def _generate_mig_sql(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
-        # map_id 필수임! 요청이 없거나 잘못된 경우 에러를 반환한다.
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
         map_id = int(map_id)
         job = self._load_job(map_id)
         if not job:
             return {"ok": False, "map_id": map_id, "error": "job not found"}
-        # force_regenerate는 user_edited=Y인 경우에도 MIG_SQL을 강제로 재생성할지 여부를 결정한다.
-        # 이미 존재하면 MIG_SQL을 그대로 유지하고, 존재하지 않으면 에러를 반환한다.
         force_regenerate = self._as_bool(command.get("force_regenerate", False))
         user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
         existing_mig_sql = str(job.get("mig_sql") or "").strip()
@@ -354,18 +346,16 @@ class MigrationCommandTool(Component):
                     "mig_sql": existing_mig_sql,
                 }
             return {"ok": False, "map_id": map_id, "error": "USER_EDITED=Y but MIG_SQL is empty"}
-        # dependency check를 수행한다. 통과하지 못하면 WAITING 상태를 반환한다.
+        # Check PRIOR_MAP_ID and same-target priority dependencies before doing any SQL work.
         dep = self._check_dependencies(job)
         if not dep["ok"]:
             return {"ok": False, "map_id": map_id, "status": dep["status"], "message": dep["message"]}
-        # mapping details를 조회한다. next_mig_info_dtl에서 컬럼 매핑 조회, 없으면 에러를 반환한다.
         details = self._load_details(map_id)
         if not details:
             return {"ok": False, "map_id": map_id, "error": "No mapping details found"}
 
         generation_source = "llm"
         llm_error = ""
-        # 프롬포트 랜더링 및 LLM 호출
         try:
             mig_sql_prompt = str(self.mig_sql_prompt or "").strip()
             if not mig_sql_prompt:
@@ -391,7 +381,7 @@ class MigrationCommandTool(Component):
             "mig_sql": mig_sql,
         }
 
-    # action="generate_verify_sql": VERIFY_SQL을 생성한다.
+    # action="generate_verify_sql": VERIFY_SQL을 생성해서 채팅 응답으로 반환한다.
     def _generate_verify_sql(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
@@ -456,7 +446,6 @@ class MigrationCommandTool(Component):
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
         map_id = int(map_id)
-        # db에서 job과 details를 조회해서 prompt를 랜더링으로 넘김, render(job=job 형태로)
         job = self._load_job(map_id)
         if not job:
             return {"ok": False, "map_id": map_id, "error": "job not found"}
@@ -528,7 +517,7 @@ class MigrationCommandTool(Component):
         self._write_log(map_id, "RESET", "INFO", "RESET", "PASS", "Job reset. SQL values preserved.")
         return {"ok": rowcount > 0, "map_id": map_id, "updated_rows": rowcount}
 
-    # action="save_user_sql": 사용자가 수정한 SQL을 저장한다.
+    # action="save_user_sql": 사용자가 수정한 SQL을 저장하고 USER_EDITED=Y로 표시한다.
     def _save_user_sql(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
@@ -640,7 +629,6 @@ class MigrationCommandTool(Component):
 
     # action="run_migration_job": SQL 생성, 실행, 검증까지 전체 사이클을 수행한다.
     def _run_migration_job(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
-        # command에서 map_id를 받아 이번에 실행할 NEXT_MIG_INFO 작업을 결정한다.
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
         map_id = int(map_id)
@@ -649,7 +637,6 @@ class MigrationCommandTool(Component):
         started = time.perf_counter()
         max_attempts = max(1, int(command.get("max_attempts") or self.default_max_attempts or 1))
 
-        # map_id 기준으로 NEXT_MIG_INFO master row를 먼저 조회한다.
         job = self._load_job(map_id)
         if not job:
             return {"ok": False, "map_id": map_id, "error": "job not found"}
@@ -670,7 +657,6 @@ class MigrationCommandTool(Component):
                 "error": "Full migration is allowed only when STATUS is NULL.",
             }
 
-        # PRIOR_MAP_ID와 같은 TO_TABLE 우선순위를 확인한다. 통과하지 못하면 WAITING으로 종료한다.
         dep = self._check_dependencies(job)
         if not dep["ok"]:
             final_status = str(dep.get("status") or "WAITING")
@@ -689,7 +675,6 @@ class MigrationCommandTool(Component):
             job = self._load_job(map_id) or job
             user_edited = str(job.get("user_edited") or "").upper() == "Y"
 
-            # force_regenerate는 내부 SQL 생성 함수로 넘기는 공통 옵션이다.
             generation_command = {
                 "force_regenerate": command.get("force_regenerate", False),
             }
@@ -704,7 +689,6 @@ class MigrationCommandTool(Component):
                 retry_count = attempt - 1
                 last_retry_count = retry_count
 
-                # 매 시도마다 job을 다시 읽어 중간 저장된 사용자 수정 SQL을 반영한다.
                 job = self._load_job(map_id) or job
                 user_edited = str(job.get("user_edited") or "").upper() == "Y"
 
@@ -718,7 +702,7 @@ class MigrationCommandTool(Component):
                         last_mig_sql = mig_sql
                         steps.append({"step": "generate_mig_sql", "attempt": attempt, "status": "SKIPPED_USER_EDITED"})
                     else:
-                        # LLM 생성 함수에는 이전 실패 에러와 SQL을 넘겨 retry prompt에 반영한다.
+                        # MIG_SQL 생성 함수에는 이전 실패 에러와 SQL을 넘겨 retry prompt에 반영한다.
                         mig_command = {
                             **generation_command,
                             "retry_count": retry_count,
@@ -763,9 +747,9 @@ class MigrationCommandTool(Component):
                             continue
                         break
 
-                # VERIFY_SQL은 MIG_SQL 실행 이후의 최신 DB row를 다시 읽은 뒤 결정한다.
                 job = self._load_job(map_id) or job
                 user_edited = str(job.get("user_edited") or "").upper() == "Y"
+                # VERIFY_SQL은 MIG_SQL 실행 이후의 최신 DB row를 다시 읽은 뒤 결정한다.
                 verify_sql = str(job.get("verify_sql") or "").strip()
 
                 # 사용자 수정 VERIFY_SQL이 있으면 LLM 생성을 건너뛰고 저장된 SQL을 사용한다.
@@ -845,7 +829,6 @@ class MigrationCommandTool(Component):
             final_status = str(last_failure.get("status") or "FAIL")
             elapsed = int(time.perf_counter() - started)
 
-            # 최종 실패 시점에도 마지막으로 사용한 SQL은 추적 가능하도록 저장한다.
             self._save_final_sql(map_id, last_mig_sql, last_verify_sql)
             self._update_job_status(map_id, final_status, elapsed, last_retry_count)
             self._write_log(
@@ -885,9 +868,8 @@ class MigrationCommandTool(Component):
     # ======================================================================
     # 공통 코드
     # ======================================================================
+    # command_json을 dict로 변환하고 action/map_id 같은 실행 파라미터를 해석한다.
     def _parse_command(self) -> dict[str, Any]:
-        # Langflow Agent가 넘긴 command_json 문자열을 dict로 변환한다.
-        # 여기서 action/map_id/confirm 같은 실행 파라미터가 처음 해석된다.
         raw = self.command_json
         if isinstance(raw, dict):
             return raw
@@ -986,7 +968,6 @@ class MigrationCommandTool(Component):
         command: dict[str, Any],
     ) -> str:
         source_context = self._build_source_context(job)
-        # Langflow prompt input에 있는 {placeholder}들을 아래 값으로 치환한다.
         to_table = self._qualify_table(job.get("to_table", ""), self.target_schema)
         from_table = source_context["from_table"]
         mapping_info = self._format_mapping_info(details)
@@ -1013,7 +994,7 @@ class MigrationCommandTool(Component):
             rendered = rendered.replace("{" + key + "}", str(value))
         return rendered
 
-    #재시도 할 때 이전 에러와 SQL을 포함한 컨텍스트를 생성한다.
+    # 재시도할 때 이전 에러와 SQL을 prompt에 넣을 문자열로 만든다.
     def _build_retry_context(self, last_error: str, last_sql: str, retry_count: Any = None) -> str:
         if not last_error and not last_sql:
             return ""
@@ -1051,10 +1032,27 @@ class MigrationCommandTool(Component):
             blocks.append(f"- {label} {table_name}:\n{columns}")
         return "\n".join(blocks)
 
+    # FR_TABLE과 MAP_TYPE을 기준으로 prompt에 들어갈 source context를 만든다.
     def _build_source_context(self, job: dict[str, Any]) -> dict[str, str]:
         map_type = str(job.get("map_type") or "").strip().upper()
         raw_source = str(job.get("fr_table") or "").strip()
-        qualified_source = self._qualify_source_expression(raw_source)
+        # If source_schema is set, prefix physical source tables found in FR_TABLE.
+        qualified_source = raw_source
+        source_schema = str(self.source_schema or "").strip().upper()
+        if source_schema:
+            if not re.fullmatch(r"[A-Z][A-Z0-9_$#]*", source_schema):
+                raise ValueError(f"Invalid source_schema: {source_schema}")
+            join_parts = re.split(r"\b(?:(?:LEFT|RIGHT|FULL|INNER|CROSS)\s+(?:OUTER\s+)?)?JOIN\b", raw_source, flags=re.I)
+            source_tables: list[str] = []
+            for part in join_parts:
+                before_on = re.split(r"\bON\b", part, flags=re.I)[0].strip()
+                tokens = before_on.split()
+                if tokens and tokens[0].upper() not in {"SELECT", "WITH", "FROM", "("}:
+                    source_tables.append(tokens[0])
+            for table in sorted(set(source_tables), key=len, reverse=True):
+                if "." in table:
+                    continue
+                qualified_source = re.sub(rf"(?<![.\w]){re.escape(table)}(?![.\w])", f"{source_schema}.{table}", qualified_source)
         if map_type == "COMPLEX":
             source_query = str(qualified_source or "").strip()
             while source_query.endswith(";"):
@@ -1099,7 +1097,6 @@ class MigrationCommandTool(Component):
         )
 
     def _call_llm(self, prompt: str) -> str:
-        # SQL 생성도 OpenAI-compatible chat/completions 한 경로만 사용한다.
         api_key = str(self.llm_api_key or "").strip()
         model = str(self.llm_model or "").strip()
         max_tokens = int(self.llm_max_tokens or 4096)
@@ -1188,8 +1185,8 @@ class MigrationCommandTool(Component):
             raise ValueError("VERIFY_SQL must start with SELECT or WITH")
         return statement
 
+    # NEXT_MIG_INFO 단건 조회 결과를 Python dict로 변환한다.
     def _load_job(self, map_id: int) -> dict[str, Any] | None:
-        # NEXT_MIG_INFO 단건 조회 결과를 Python dict로 변환한다.
         map_table = self._qualify_table("NEXT_MIG_INFO", self.system_schema)
         with self._connect() as conn:
             cur = conn.cursor()
@@ -1228,8 +1225,8 @@ class MigrationCommandTool(Component):
             "upd_ts": self._to_text(row[17]),
         }
 
+    # NEXT_MIG_INFO_DTL의 FR_COL -> TO_COL 목록을 MAP_DTL 순서로 가져온다.
     def _load_details(self, map_id: int) -> list[dict[str, Any]]:
-        # NEXT_MIG_INFO_DTL의 FR_COL -> TO_COL 목록을 MAP_DTL 순서로 가져온다.
         detail_table = self._qualify_table("NEXT_MIG_INFO_DTL", self.system_schema)
         with self._connect() as conn:
             cur = conn.cursor()
@@ -1248,8 +1245,8 @@ class MigrationCommandTool(Component):
             for r in rows
         ]
 
+    # PRIOR_MAP_ID와 같은 TO_TABLE 내 우선순위를 확인해서 실행 가능 여부를 반환한다.
     def _check_dependencies(self, job: dict[str, Any]) -> dict[str, Any]:
-        # PRIOR_MAP_ID와 같은 TO_TABLE 내 우선순위를 확인해서 실행 가능 여부를 반환한다.
         prior_map_id = job.get("prior_map_id")
         try:
             prior_map_id_int = int(prior_map_id) if prior_map_id is not None and str(prior_map_id).strip() else 0
@@ -1274,8 +1271,8 @@ class MigrationCommandTool(Component):
 
         return {"ok": True, "message": "Dependencies passed"}
 
+    # 같은 TO_TABLE 안에서는 PRIORITY 숫자가 더 작은 작업이 먼저 PASS여야 한다.
     def _check_same_target_priority_dependencies(self, job: dict[str, Any]) -> dict[str, Any]:
-        # 같은 TO_TABLE 안에서는 PRIORITY 숫자가 더 작은 작업이 먼저 PASS여야 한다.
         to_table = str(job.get("to_table") or "").strip()
         priority = job.get("priority")
         map_id = int(job.get("map_id") or 0)
@@ -1350,8 +1347,8 @@ class MigrationCommandTool(Component):
             )
             conn.commit()
 
+    # MIG_SQL을 한 번 실행하고 처리 row 수를 반환한다.
     def _execute_mig_sql_once(self, job: dict[str, Any], retry_count: int) -> dict[str, Any]:
-        # TRUNC_YN=Y이면 target truncate를 먼저 수행한 뒤 MIG_SQL을 실행한다.
         map_id = int(job["map_id"])
         mig_sql = self._sanitize_migration_sql(str(job.get("mig_sql") or ""))
         if str(job.get("trunc_yn") or "").upper() == "Y":
@@ -1431,9 +1428,10 @@ class MigrationCommandTool(Component):
             conn.commit()
         return total_rowcount
 
+    # VERIFY_SQL 실행 결과 row의 모든 값이 0인지 확인한다.
     def _execute_verify_sql_with_rows(self, verify_sql: str) -> tuple[bool, str, list[dict[str, Any]]]:
-        # 검증 SQL은 숫자 차이값을 반환한다고 가정한다.
-        # 반환 row의 모든 value가 0이면 성공, 하나라도 0이 아니면 실패다.
+        # Verification SQL is expected to return numeric difference values.
+        # All returned values must be zero. Any non-zero or blank value means failure.
         statements = self._split_sql_script(verify_sql)
         if not statements:
             return False, "verify_sql is empty", []
@@ -1457,7 +1455,14 @@ class MigrationCommandTool(Component):
         ]
         for row in last_rows:
             for value in row:
-                if not self._is_zero(value):
+                text_value = self._to_text(value).strip()
+                if text_value == "":
+                    return False, f"Mismatch found: {row}", result_rows
+                try:
+                    is_zero = Decimal(text_value) == Decimal("0")
+                except (InvalidOperation, ValueError):
+                    is_zero = text_value == "0"
+                if not is_zero:
                     return False, f"Mismatch found: {row}", result_rows
         return True, "All Verification Passed", result_rows
 
@@ -1479,6 +1484,7 @@ class MigrationCommandTool(Component):
             )
             conn.commit()
 
+    # NEXT_MIG_LOG insert 컬럼 순서는 운영 테이블 기준에 맞춰 유지한다.
     def _write_log(
         self,
         map_id: int,
@@ -1490,7 +1496,6 @@ class MigrationCommandTool(Component):
         retry_count: int = 0,
         generate_sql: str | None = None,
     ) -> None:
-        # NEXT_MIG_LOG insert 컬럼 순서는 운영 테이블 기준에 맞춰 유지한다.
         log_table = self._qualify_table("NEXT_MIG_LOG", self.system_schema)
         seq = self._qualify_table("MIGRATION_LOG_SEQ", self.system_schema)
         safe_message = str(message or "")[:4000]
@@ -1535,14 +1540,6 @@ class MigrationCommandTool(Component):
             statements.append(tail)
         return statements
 
-    def _is_zero(self, value: Any) -> bool:
-        value = self._to_text(value).strip()
-        if value == "":
-            return False
-        try:
-            return Decimal(value) == Decimal("0")
-        except (InvalidOperation, ValueError):
-            return value == "0"
 
     def _as_bool(self, value: Any) -> bool:
         if isinstance(value, bool):
@@ -1562,29 +1559,6 @@ class MigrationCommandTool(Component):
             raise ValueError(f"Invalid schema: {clean_schema}")
         return f"{clean_schema}.{clean}"
 
-    def _qualify_source_expression(self, fr_table: str) -> str:
-        expr = str(fr_table or "").strip()
-        schema = str(self.source_schema or "").strip().upper()
-        if not schema:
-            return expr
-        if not re.fullmatch(r"[A-Z][A-Z0-9_$#]*", schema):
-            raise ValueError(f"Invalid source_schema: {schema}")
-        table_names = sorted(set(self._extract_table_names(expr)), key=len, reverse=True)
-        for table in table_names:
-            if "." in table:
-                continue
-            expr = re.sub(rf"(?<![.\w]){re.escape(table)}(?![.\w])", f"{schema}.{table}", expr)
-        return expr
-
-    def _extract_table_names(self, fr_table: str) -> list[str]:
-        parts = re.split(r"\b(?:(?:LEFT|RIGHT|FULL|INNER|CROSS)\s+(?:OUTER\s+)?)?JOIN\b", fr_table, flags=re.I)
-        tables: list[str] = []
-        for part in parts:
-            part = re.split(r"\bON\b", part, flags=re.I)[0].strip()
-            tokens = part.split()
-            if tokens and tokens[0].upper() not in {"SELECT", "WITH", "FROM", "("}:
-                tables.append(tokens[0])
-        return tables
 
     def _to_text(self, value: Any) -> str:
         if value is None:

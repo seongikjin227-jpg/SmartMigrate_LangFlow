@@ -21,7 +21,8 @@ class SqlConversionCommandTool(Component):
 
     _db_cache: dict[str, Any] = {}
 
-    # ==================== ???놁졑 ?筌먦끉踰?: DB/LLM ??⑤슡???筌먲퐢沅?? command JSON?????놁졑?꾩룇猷????덈펲. ====================
+
+    # Component inputs: command JSON, DB connection, LLM settings, and prompt templates.
     inputs = [
         MessageTextInput(
             name="command_json",
@@ -83,13 +84,14 @@ class SqlConversionCommandTool(Component):
         ),
     ]
 
-    # ==================== ?怨쀫츊???筌먦끉踰?: Action???깅꺄 ?롪퍒???좊ご???? result JSON ?꾩룇瑗???紐껊퉵?? ====================
+
+    # Component output: returns one result JSON object.
     outputs = [
         Output(display_name="Result", name="result", method="run_command"),
     ]
 
-    # ==================== ???떷??袁⑤?獄?====================
-    # ???됱Ŧ?????떷???怨뺣뼺???濡?졎嶺?run_command() 嶺뚮∥?꾥땻??戮?뱺 elif ??곕?餓???怨뺣뼺????겶? ??⑤벡夷???貫???嶺뚮씭??キ??怨댄맋 ????????떷?????????? 嶺뚮∥?꾥땻??? ??뚮뿭寃??紐껊퉵??
+
+    # Dispatch command_json.action to the matching action method.
     def run_command(self) -> Data:
         try:
             command = self._parse_command()
@@ -112,13 +114,14 @@ class SqlConversionCommandTool(Component):
 
             self.status = result
             return Data(data=result)
-        # Exception???롪퍔?????裕?result = {"ok": False ..}???꾩룇瑗????겶? ?????嶺뚮∥???낆??????????롪퍒???좊ご??꾩룇瑗???紐껊퉵??
+
         except Exception as exc:
             result = {"ok": False, "error": str(exc)}
             self.status = result
             return Data(data=result)
 
-    # action="test_connection": DB?? LLM ??⑤슡????筌먦끉逾??類ｋ펲.
+
+    # action="test_connection": check DB and LLM connectivity.
     def _test_connection(self) -> dict[str, Any]:
         try:
             result = self._get_db().run("SELECT 1 AS OK FROM DUAL", include_columns=True)
@@ -128,12 +131,12 @@ class SqlConversionCommandTool(Component):
 
         api_key = str(self.llm_api_key or "").strip()
         model = str(self.llm_model or "").strip()
-        # false ?꾩룇瑗??case
+
         if not api_key:
             llm_result = {"ok": False, "message": "LLM API key is empty"}
         elif not model:
             llm_result = {"ok": False, "message": "LLM model is empty"}
-        # true ?꾩룇瑗??case
+
         else:
             try:
                 base_url = str(self.llm_base_url or "https://api.openai.com/v1").strip().rstrip("/")
@@ -160,12 +163,14 @@ class SqlConversionCommandTool(Component):
             "llm": llm_result,
         }
 
-    # action="status": space_nm/sql_id ?リ옇?? SQL Conversion ??얜???1濾곌쑬????브퀗????類ｋ펲.
+
+    # action="status": load one NEXT_SQL_INFO job by space_nm and sql_id.
     def _status(self, command: dict[str, Any]) -> dict[str, Any]:
         job = self._load_job(command)
         return {"ok": bool(job), "job": job, "error": "" if job else "job not found"}
 
-    # action="list_pending": SQL Conversion ??얜????熬곣뫀沅???브퀗????類ｋ펲.
+
+    # action="list_pending": list READY or NULL STATUS_CONVERSION jobs.
     def _list_pending(self, limit: Any) -> dict[str, Any]:
         safe_limit = max(1, min(int(limit or 20), 100))
         table = self._qualify_table("NEXT_SQL_INFO", self.system_schema)
@@ -205,7 +210,8 @@ class SqlConversionCommandTool(Component):
         ]
         return {"ok": True, "count": len(jobs), "jobs": jobs}
 
-    # action="generate_to_sql_text": FROM SQL??TO-BE SQL???곌떠???臾먮┰??
+
+    # action="generate_to_sql_text": generate TO-BE SQL without DB update.
     def _generate_to_sql_text(self, command: dict[str, Any]) -> dict[str, Any]:
         job = self._load_job(command)
         if not job:
@@ -217,7 +223,7 @@ class SqlConversionCommandTool(Component):
         if not source_sql:
             return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "source SQL is empty"}
 
-        # TARGET_TABLE 疫꿸퀣? mapping context??筌띾슢諭얏?LLM???袁⑤뼎??prompt?????쐭筌띻낱釉??
+
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._render_to_sql_prompt(
             from_sql=source_sql,
@@ -241,21 +247,22 @@ class SqlConversionCommandTool(Component):
             "to_sql_text": to_sql_text,
         }
 
-    # action="preview_conversion_prompt": command?癒?퐣 space_nm/sql_id??獄쏆룇釉?conversion prompt??沃섎챶???類ㅼ뵥??뺣뼄.
+
+    # action="preview_conversion_prompt": render conversion prompt without LLM call.
     def _preview_conversion_prompt(self, command: dict[str, Any]) -> dict[str, Any]:
-        # command??space_nm/sql_id嚥?NEXT_SQL_INFO ?臾믩씜??鈺곌퀬???뺣뼄.
+
         job = self._load_job(command)
         if not job:
             return {"ok": False, "error": "job not found"}
 
-        # EDIT_FR_SQL????됱몵筌??怨쀪퐨 ?????랁? ??곸몵筌?FR_SQL_TEXT???????뺣뼄.
+
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql_text = str(job.get("fr_sql_text") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql_text
         if not source_sql:
             return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "source SQL is empty"}
 
-        # TARGET_TABLE 疫꿸퀣? mapping context??筌띾슢諭얏? LLM ?紐꾪뀱 ??곸뵠 筌ㅼ뮇伊?prompt筌?獄쏆꼹???뺣뼄.
+
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._render_to_sql_prompt(
             from_sql=source_sql,
@@ -280,14 +287,15 @@ class SqlConversionCommandTool(Component):
             "rag_rule_count": rag_rule_count,
         }
 
-    # action="preview_verify_prompt": command?癒?퐣 space_nm/sql_id?? to_sql_text??獄쏆룇釉?野꺜筌?prompt??沃섎챶???類ㅼ뵥??뺣뼄.
+
+    # action="preview_verify_prompt": render verification prompt without LLM call.
     def _preview_verify_prompt(self, command: dict[str, Any]) -> dict[str, Any]:
-        # command??space_nm/sql_id嚥?NEXT_SQL_INFO ?臾믩씜??鈺곌퀬???뺣뼄.
+
         job = self._load_job(command)
         if not job:
             return {"ok": False, "error": "job not found"}
 
-        # EDIT_FR_SQL????됱몵筌??怨쀪퐨 ?????랁? ??곸몵筌?FR_SQL_TEXT???????뺣뼄.
+
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql_text = str(job.get("fr_sql_text") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql_text
@@ -302,7 +310,7 @@ class SqlConversionCommandTool(Component):
                 "error": "to_sql_text is required for preview_verify_prompt",
             }
 
-        # TARGET_TABLE 疫꿸퀣? mapping context???節뚮선????堉?疫꿸퀣???곗쨮 野꺜筌앹빜釉뤄쭪? ?類ㅼ뵥??????뉗쓺 ??뺣뼄.
+
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._render_verify_prompt(
             from_sql=source_sql,
@@ -328,12 +336,13 @@ class SqlConversionCommandTool(Component):
             "rag_rule_count": rag_rule_count,
         }
 
-    # ======================================================================
-    # ??ㅻ쾹???袁⑤?獄?
-    # ======================================================================
+
+
+
+    # Parse Langflow command_json into a Python dict.
     def _parse_command(self) -> dict[str, Any]:
-        # Langflow Agent?띠럾? ???얄뵺 command_json ??쒖굣???怨몃굵 dict???곌떠???臾먮┰??
-        # ?????action/space_nm/sql_id ?띠룇?? ???덈뺄 ???逾ф쾬?롮구?묕퐛泥? 嶺뚳퐣瑗????怨댄맍??類ｋ펲.
+
+
         raw = self.command_json
         if isinstance(raw, dict):
             return raw
@@ -435,9 +444,10 @@ class SqlConversionCommandTool(Component):
             "upd_ts": self._to_text(row[15]),
         }
 
-    # TARGET_TABLE???ㅼ뼱?덈뒗 FR_TABLE 湲곗??쇰줈 migration mapping怨?SQL conversion RAG瑜?prompt??text濡?留뚮뱺??
+
+    # Build prompt mapping context from TARGET_TABLE, NEXT_MIG_INFO, and NEXT_MIG_RAG_INFO.
     def _build_mapping_schema_text(self, job: dict[str, Any]) -> tuple[str, list[int], list[str], int]:
-        # TARGET_TABLE??鍮꾩뼱 ?덉쑝硫?SQL 蹂몃Ц?먯꽌 table紐낆쓣 異붿륫?섏? ?딄퀬 鍮?context瑜?諛섑솚?쒕떎.
+
         fr_tables = self._extract_target_fr_tables(job.get("target_table"))
         if not fr_tables:
             sections = [
@@ -525,6 +535,7 @@ class SqlConversionCommandTool(Component):
         rag_rule_count = len([line for line in rag_lines if line.strip().startswith("- {")])
         return "\n".join(sections), map_ids, fr_tables, rag_rule_count
 
+    # Load up to 3 SQL_CONVERSION RAG rules for each FR_TABLE.
     def _load_conversion_rag_rules(self, fr_tables: list[str]) -> list[str]:
         table = self._qualify_table("NEXT_MIG_RAG_INFO", self.system_schema)
         if not fr_tables:
