@@ -60,6 +60,18 @@ class SqlConversionCommandTool(Component):
             info="Prompt template for generate_to_sql_text. Use placeholders: {from_sql}, {mapping_schema_text}, {source_schema}, {target_schema}, {correct_sql_hint_json}, {last_error}.",
         ),
         MessageTextInput(
+            name="bind_sql_prompt",
+            display_name="BIND SQL Prompt",
+            required=False,
+            info="Prompt template for BIND_SQL generation. Use placeholders: {from_sql}, {to_sql}, {mapping_schema_text}, {source_schema}, {target_schema}, {last_error}.",
+        ),
+        MessageTextInput(
+            name="test_sql_prompt",
+            display_name="TEST SQL Prompt",
+            required=False,
+            info="Prompt template for TEST_SQL generation. Use placeholders: {from_sql}, {to_sql}, {bind_sql}, {bind_set}, {mapping_schema_text}, {source_schema}, {target_schema}, {last_error}.",
+        ),
+        MessageTextInput(
             name="verify_sql_prompt",
             display_name="VERIFY SQL Prompt",
             required=False,
@@ -174,7 +186,7 @@ class SqlConversionCommandTool(Component):
         return {"ok": bool(job), "job": job, "error": "" if job else "job not found"}
 
 
-    # action="list_pending": STATUS_CONVERSION이 READY 또는 NULL인 작업 대상을 조회한다.
+    # action="list_pending": list SQL Conversion jobs where STATUS_CONVERSION is NULL.
     def _list_pending(self, limit: Any) -> dict[str, Any]:
         safe_limit = max(1, min(int(limit or 20), 100))
         table = self._qualify_table("NEXT_SQL_INFO", self.system_schema)
@@ -190,7 +202,7 @@ class SqlConversionCommandTool(Component):
                            DBMS_LOB.GETLENGTH(EDIT_FR_SQL) AS EDIT_FR_SQL_LEN,
                            PRIORITY, UPD_TS
                     FROM {table}
-                    WHERE (STATUS_CONVERSION IS NULL OR UPPER(TRIM(STATUS_CONVERSION)) = 'READY')
+                    WHERE STATUS_CONVERSION IS NULL
                     ORDER BY PRIORITY ASC NULLS LAST, UPD_TS NULLS FIRST, SPACE_NM, SQL_ID
                 )
                 WHERE ROWNUM <= :1
@@ -350,127 +362,155 @@ class SqlConversionCommandTool(Component):
             "rag_rule_count": rag_rule_count,
         }
 
-    # 수정 중
-    # action="run_sql_conversion_job": TO_SQL 생성, 실행, verify SQL 생성, 검증 실행까지 전체 사이클을 수행한다.
+    # action="run_sql_conversion_job": run the full SQL Conversion flow: TO_SQL, BIND_SQL, TEST_SQL.
     def run_sql_conversion_job(self, sql_id: str, space_nm: str, command: dict[str, Any]) -> dict[str, Any]:
 
-        # =====_run_sql_conversion_job은 사용자가 채팅으로 호출할 수도 있기 때문에 사용자가 요청한 job이 실행 가능한지 검증한다.=====
+        # sql_id and space_nm are required because this job has no single numeric id.
         if (sql_id is None or str(sql_id).strip() == "") or (space_nm is None or str(space_nm).strip() == ""):
-            return {"ok": False, "error": "sql_id and space_nm are required for run_sql_conversion_job"}    
+            return {"ok": False, "error": "sql_id and space_nm are required for run_sql_conversion_job"}
         sql_id = str(sql_id or "").strip()
         space_nm = str(space_nm or "").strip()
 
-        # started는 최종 PASS/FAIL 상태 저장 시 elapsed_seconds 계산에 사용한다.
+        # started is used for elapsed_seconds in response and NEXT_SQL_LOG.
         started = time.perf_counter()
         max_attempts = max(1, int(command.get("max_attempts") or 1))
 
+        # Load the job first and block rows that are already processed.
         job = self._load_job(space_nm, sql_id)
         if not job:
-            return {"ok": False, "error": f"job not found for sql_id={sql_id}, space_nm={space_nm}"}    
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "job not found"}
 
-        # SQL Conversion 에서는 Use_yn은 사용하지 않음, 오직 Status 컬럼 만으로 상태를 관리함
-        if str(job.get("status_conversion") or "").strip().upper() not in ("READY", ""):
-            return {
-                "ok": False,
-                "space_nm": job.get("space_nm"),
-                "sql_id": job.get("sql_id"),
-                "status": job.get("status_conversion"),
-                "error": f"job is not in READY,null status for sql_id={sql_id}, space_nm={space_nm}",
-            }
+        # SQL Conversion runs only when STATUS_CONVERSION is NULL.
+        current_status = str(job.get("status_conversion") or "").strip().upper()
+        if current_status:
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "status": job.get("status_conversion"), "error": "run_sql_conversion_job is allowed only when STATUS_CONVERSION is NULL."}
 
-        # check_dependency는 SQL Conversion에서는 사용하지 않음
-
-        # steps에는 SQL 생성/실행/검증 각 단계의 요약 결과를 순서대로 누적한다.
         steps: list[dict[str, Any]] = []
-
-        # Keep the latest TO_SQL value for final PASS/FAIL persistence.
         last_to_sql = str(job.get("to_sql") or "")
-        last_tuned_fr_sql = str(job.get("tuned_fr_sql") or "")
         last_bind_sql = str(job.get("bind_sql") or "")
+        last_bind_set = str(job.get("bind_set") or "")
         last_test_sql = str(job.get("test_sql") or "")
+        last_retry_count = 0
 
         try:
-            # 실행 직전에 작업을 다시 읽어 사용자 수정 SQL이나 최신 상태를 반영한다.
-            job = self._load_job(space_nm, sql_id) or job
-            user_edited = str(job.get("user_edited") or "").upper() == "Y"
-
-            # force_regenerate 옵션은 TO_SQL을 LLM으로 재생성할지 여부를 결정한다.
-            generation_command = {
-                "force_regenerate": command.get("force_regenerate", False),
-            }
-
-                        # 이전 실패 정보와 마지막 SQL을 TO_SQL 생성 함수에 넘겨 retry prompt에 반영한다.
+            # mapping_schema_text is shared by TO_SQL and TEST_SQL prompts.
+            mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
             last_failure: dict[str, Any] = {}
-            conversion_executed = False
-            last_retry_count = 0
+            to_sql_executed = False
+            bind_sql_executed = False
 
-            # attempt는 1부터 시작하고, retry_count는 DB/로그 기준으로 0부터 시작한다.
+            # attempt starts at 1, while retry_count and ATTEMPT_NO start at 0.
             for attempt in range(1, max_attempts + 1):
                 retry_count = attempt - 1
                 last_retry_count = retry_count
-
                 job = self._load_job(space_nm, sql_id) or job
-                user_edited = str(job.get("user_edited") or "").upper() == "Y"
+                user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
+                tag_kind = str(job.get("tag_kind") or "").strip().upper()
 
-                # TO_SQL은 따로 실행할 필요가 없으므로 LLM 생성만 성공하면 이 단계는 통과한다.
-                if not conversion_executed:
-                    # USER_EDITED=Y이면 force_regenerate가 아닌 경우 DB에 저장된 TO_SQL을 그대로 사용한다.
-                    if user_edited and not generation_command.get("force_regenerate", False):
+                # TO_SQL step: use saved TO_SQL for USER_EDITED=Y, otherwise call LLM.
+                if not to_sql_executed:
+                    if user_edited:
                         to_sql = str(job.get("to_sql") or "").strip()
                         if not to_sql:
                             raise ValueError("USER_EDITED=Y but TO_SQL is empty")
                         last_to_sql = to_sql
-                        steps.append({"step": "generate_to_sql", "attempt": attempt, "status": "SKIPPED_USER_EDITED"})
+                        steps.append({"step": "generate_to_sql", "attempt": attempt, "status": "SUCCESS-TOBE", "message": "USER_EDITED=Y. Existing TO_SQL was used."})
                     else:
-                        # 이전 실패 정보와 마지막 SQL을 TO_SQL 생성 함수에 넘겨 retry prompt에 반영한다.
-                        conversion_command = {
-                            **generation_command,
-                            "retry_count": retry_count,
-                            "last_error": last_failure.get("error", ""),
-                            "last_sql": last_to_sql,
-                        }
-                        conversion_result = self._generate_to_sql(
-                            space_nm,
-                            sql_id,
-                            last_error=conversion_command.get("last_error"),
-                            last_sql=conversion_command.get("last_sql"),
-                            retry_count=conversion_command.get("retry_count"),
-                            force_regenerate=bool(conversion_command.get("force_regenerate", False)),
-                        )
-                        steps.append({"step": "generate_to_sql", "attempt": attempt, **conversion_result})
-                        if not conversion_result.get("ok"):
-                            last_failure = {"status": "FAIL-CONVERT", "error": conversion_result.get("error") or "TO_SQL generation failed"}
+                        to_sql_result = self._generate_to_sql(space_nm, sql_id, last_error=last_failure.get("error", ""))
+                        if to_sql_result.get("ok"):
+                            to_sql_result["status"] = "SUCCESS-TOBE"
+                        steps.append({"step": "generate_to_sql", "attempt": attempt, **self._summary_result(to_sql_result)})
+                        if not to_sql_result.get("ok"):
+                            last_failure = {"status": "FAIL-TOBE", "error": to_sql_result.get("error") or "TO_SQL generation failed"}
+                            self._write_log(sql_id, space_nm, "TO_SQL", "FAIL", "GENERATE_TO_SQL", str(last_failure["error"])[:3900], retry_count, last_to_sql, int(time.perf_counter() - started), "TO_SQL_PROMPT")
                             if attempt < max_attempts:
                                 continue
                             break
-                        last_to_sql = str(conversion_result.get("to_sql") or "")
+                        last_to_sql = str(to_sql_result.get("to_sql") or "").strip()
+                    to_sql_executed = True
+                    self._write_log(sql_id, space_nm, "TO_SQL", "PASS", "GENERATE_TO_SQL", "TO_SQL generated", retry_count, last_to_sql, int(time.perf_counter() - started), "TO_SQL_PROMPT")
 
-                    conversion_executed = True
+                # Non-SELECT SQL does not need BIND/TEST, so TO_SQL success completes conversion.
+                if tag_kind != "SELECT":
                     elapsed = int(time.perf_counter() - started)
-                    return {
-                        "ok": True,
-                        "space_nm": space_nm,
-                        "sql_id": sql_id,
-                        "status": "TO_SQL_GENERATED",
-                        "elapsed_seconds": elapsed,
-                        "retry_count": last_retry_count,
-                        "steps": steps,
-                        "to_sql": last_to_sql,
-                    }
+                    self._save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
+                    self._update_job_status(sql_id, space_nm, "PASS-CONVERSION", elapsed, retry_count, status_tuning="READY")
+                    self._write_log(sql_id, space_nm, "TO_SQL", "PASS", "FINAL", "SQL Conversion completed without BIND/TEST because TAG_KIND is not SELECT", retry_count, last_to_sql, elapsed)
+                    return {"ok": True, "space_nm": space_nm, "sql_id": sql_id, "status": "PASS-CONVERSION", "status_tuning": "READY", "elapsed_seconds": elapsed, "retry_count": retry_count, "steps": steps, "to_sql": last_to_sql, "map_ids": map_ids, "fr_tables": fr_tables, "rag_rule_count": rag_rule_count}
 
+                # BIND_SQL step: build a SELECT from FR_SQL and save its result rows as BIND_SET JSON.
+                if not bind_sql_executed:
+                    try:
+                        bind_result = self._generate_bind_sql(job, last_to_sql, mapping_schema_text, last_failure.get("error", ""))
+                        steps.append({"step": "generate_bind_sql", "attempt": attempt, **self._summary_result(bind_result)})
+                        if not bind_result.get("ok"):
+                            last_failure = {"status": "FAIL-BIND", "error": bind_result.get("error") or "BIND_SQL generation failed"}
+                            self._write_log(sql_id, space_nm, "BIND_SQL", "FAIL", "GENERATE_BIND_SQL", str(last_failure["error"])[:3900], retry_count, last_bind_sql, int(time.perf_counter() - started), "BIND_SQL_PROMPT")
+                            if attempt < max_attempts:
+                                continue
+                            break
+                        last_bind_sql = str(bind_result.get("bind_sql") or "").strip()
+                        self._write_log(sql_id, space_nm, "BIND_SQL", "PASS", "GENERATE_BIND_SQL", "BIND_SQL generated", retry_count, last_bind_sql, int(time.perf_counter() - started), "BIND_SQL_PROMPT")
+                        bind_exec_result = self._execute_bind_sql(last_bind_sql)
+                        steps.append({"step": "execute_bind_sql", "attempt": attempt, **self._summary_result(bind_exec_result)})
+                        last_bind_set = str(bind_exec_result.get("bind_set") or "")
+                        bind_sql_executed = True
+                        self._write_log(sql_id, space_nm, "BIND_SET", "PASS", "EXECUTE_BIND_SQL", "BIND_SQL executed", retry_count, last_bind_set, int(time.perf_counter() - started))
+                    except Exception as exc:
+                        last_failure = {"status": "FAIL-BIND", "error": str(exc)}
+                        steps.append({"step": "execute_bind_sql", "attempt": attempt, "ok": False, **last_failure})
+                        self._write_log(sql_id, space_nm, "BIND_SQL", "FAIL", "EXECUTE_BIND_SQL", str(exc)[:3900], retry_count, last_bind_sql, int(time.perf_counter() - started))
+                        if attempt < max_attempts:
+                            continue
+                        break
+
+                # TEST_SQL step: compare FROM_COUNT and TO_COUNT for every CASE_NO.
+                try:
+                    test_result = self._generate_test_sql(job, last_to_sql, last_bind_sql, last_bind_set, mapping_schema_text, last_failure.get("error", ""))
+                    steps.append({"step": "generate_test_sql", "attempt": attempt, **self._summary_result(test_result)})
+                    if not test_result.get("ok"):
+                        last_failure = {"status": "FAIL-TEST", "error": test_result.get("error") or "TEST_SQL generation failed"}
+                        self._write_log(sql_id, space_nm, "TEST_SQL", "FAIL", "GENERATE_TEST_SQL", str(last_failure["error"])[:3900], retry_count, last_test_sql, int(time.perf_counter() - started), "TEST_SQL_PROMPT")
+                        if attempt < max_attempts:
+                            continue
+                        break
+                    last_test_sql = str(test_result.get("test_sql") or "").strip()
+                    self._write_log(sql_id, space_nm, "TEST_SQL", "PASS", "GENERATE_TEST_SQL", "TEST_SQL generated", retry_count, last_test_sql, int(time.perf_counter() - started), "TEST_SQL_PROMPT")
+                    test_exec_result = self._execute_test_sql(last_test_sql)
+                    steps.append({"step": "execute_test_sql", "attempt": attempt, **self._summary_result(test_exec_result)})
+                    if test_exec_result.get("ok"):
+                        elapsed = int(time.perf_counter() - started)
+                        self._save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
+                        self._update_job_status(sql_id, space_nm, "PASS-CONVERSION", elapsed, retry_count, status_tuning="READY")
+                        self._write_log(sql_id, space_nm, "TEST_SQL", "PASS", "EXECUTE_TEST_SQL", "SQL Conversion test passed", retry_count, last_test_sql, elapsed)
+                        return {"ok": True, "space_nm": space_nm, "sql_id": sql_id, "status": "PASS-CONVERSION", "status_tuning": "READY", "elapsed_seconds": elapsed, "retry_count": retry_count, "steps": steps, "to_sql": last_to_sql, "bind_sql": last_bind_sql, "bind_set": last_bind_set, "test_sql": last_test_sql, "test_rows": test_exec_result.get("result_rows"), "map_ids": map_ids, "fr_tables": fr_tables, "rag_rule_count": rag_rule_count}
+                    last_failure = {"status": "FAIL-TEST", "error": test_exec_result.get("message") or "TEST_SQL validation failed"}
+                    self._write_log(sql_id, space_nm, "TEST_SQL", "FAIL", "EXECUTE_TEST_SQL", str(last_failure["error"])[:3900], retry_count, last_test_sql, int(time.perf_counter() - started))
+                    if attempt < max_attempts:
+                        continue
+                    break
+                except Exception as exc:
+                    last_failure = {"status": "FAIL-TEST", "error": str(exc)}
+                    steps.append({"step": "execute_test_sql", "attempt": attempt, "ok": False, **last_failure})
+                    self._write_log(sql_id, space_nm, "TEST_SQL", "FAIL", "EXECUTE_TEST_SQL", str(exc)[:3900], retry_count, last_test_sql, int(time.perf_counter() - started))
+                    if attempt < max_attempts:
+                        continue
+                    break
+
+            # If all attempts end without PASS, save the last failure status and SQL values.
+            final_status = str(last_failure.get("status") or "FAIL-CONVERSION")
             elapsed = int(time.perf_counter() - started)
-            return {
-                "ok": False,
-                "space_nm": space_nm,
-                "sql_id": sql_id,
-                "status": last_failure.get("status") or "FAIL-CONVERT",
-                "error": last_failure.get("error") or "TO_SQL generation failed",
-                "elapsed_seconds": elapsed,
-                "retry_count": last_retry_count,
-                "steps": steps,
-            }
+            self._save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
+            self._update_job_status(sql_id, space_nm, final_status, elapsed, last_retry_count)
+            self._write_log(sql_id, space_nm, "ERROR", "FAIL", "FINAL", str(last_failure.get("error") or "Max attempts reached")[:3900], last_retry_count, last_test_sql or last_bind_sql or last_to_sql, elapsed)
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": final_status, "error": last_failure.get("error") or "Max attempts reached", "elapsed_seconds": elapsed, "retry_count": last_retry_count, "steps": steps}
         except Exception as exc:
-            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": str(exc)}
+            # Unexpected exceptions are also saved as final failure with the latest SQL values.
+            elapsed = int(time.perf_counter() - started)
+            self._save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
+            self._update_job_status(sql_id, space_nm, "FAIL-CONVERSION", elapsed, last_retry_count)
+            self._write_log(sql_id, space_nm, "ERROR", "FAIL", "RUN_FULL", str(exc)[:3900], last_retry_count, last_test_sql or last_bind_sql or last_to_sql, elapsed)
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": "FAIL-CONVERSION", "error": str(exc), "elapsed_seconds": elapsed, "retry_count": last_retry_count, "steps": steps}
 
     # ======================================================================
     # 공통 코드
@@ -556,7 +596,8 @@ class SqlConversionCommandTool(Component):
                 SELECT TAG_KIND, SPACE_NM, SQL_ID, FR_SQL, EDIT_FR_SQL,
                        TARGET_TABLE, TO_SQL, STATUS_CONVERSION, LOG,
                        TUNED_FR_SQL, TUNED_TO_SQL, SQL_LENGTH, MAP_TYPE,
-                       PRIORITY, BATCH_CNT, UPD_TS
+                       PRIORITY, BATCH_CNT, UPD_TS, USER_EDITED,
+                       BIND_SQL, BIND_SET, TEST_SQL, STATUS_TUNING, RETRY_COUNT
                 FROM {table}
                 WHERE SPACE_NM = :1
                   AND SQL_ID = :2
@@ -583,6 +624,12 @@ class SqlConversionCommandTool(Component):
             "priority": row[13],
             "batch_cnt": row[14],
             "upd_ts": self._to_text(row[15]),
+            "user_edited": self._to_text(row[16]),
+            "bind_sql": self._to_text(row[17]),
+            "bind_set": self._to_text(row[18]),
+            "test_sql": self._to_text(row[19]),
+            "status_tuning": self._to_text(row[20]),
+            "retry_count": row[21],
         }
 
 
@@ -742,6 +789,44 @@ class SqlConversionCommandTool(Component):
             template = template.replace("{" + key + "}", str(value))
         return template
 
+    # Render the BIND_SQL prompt by replacing placeholders with runtime values.
+    def _render_bind_sql_prompt(
+        self,
+        from_sql: str,
+        to_sql: str,
+        mapping_schema_text: str,
+        source_schema: str,
+        target_schema: str,
+        last_error: str,
+    ) -> str:
+        template = str(self.bind_sql_prompt or "").strip()
+        if not template:
+            raise ValueError("BIND SQL Prompt input is required for BIND_SQL generation")
+        values = {"from_sql": from_sql, "to_sql": to_sql, "mapping_schema_text": mapping_schema_text, "source_schema": source_schema, "target_schema": target_schema, "last_error": last_error}
+        for key, value in values.items():
+            template = template.replace("{" + key + "}", str(value))
+        return template
+
+    # Render the TEST_SQL prompt by replacing placeholders with runtime values.
+    def _render_test_sql_prompt(
+        self,
+        from_sql: str,
+        to_sql: str,
+        bind_sql: str,
+        bind_set: str,
+        mapping_schema_text: str,
+        source_schema: str,
+        target_schema: str,
+        last_error: str,
+    ) -> str:
+        template = str(self.test_sql_prompt or "").strip()
+        if not template:
+            raise ValueError("TEST SQL Prompt input is required for TEST_SQL generation")
+        values = {"from_sql": from_sql, "to_sql": to_sql, "bind_sql": bind_sql, "bind_set": bind_set, "mapping_schema_text": mapping_schema_text, "source_schema": source_schema, "target_schema": target_schema, "last_error": last_error}
+        for key, value in values.items():
+            template = template.replace("{" + key + "}", str(value))
+        return template
+
     # SQL 변환 검증 프롬포트의 placeholder를 실제 값으로 치환한다.
     def _render_verify_prompt(
         self,
@@ -789,16 +874,242 @@ class SqlConversionCommandTool(Component):
         data = self._post_json(url, payload, {"Authorization": f"Bearer {api_key}"})
         return str(data["choices"][0]["message"].get("content", ""))
 
-    # LLM 응답에서 markdown 코드 블록과 마지막 세미콜론을 제거한다.
+    # Remove markdown code fences and the trailing semicolon from an LLM SQL response.
     def _sanitize_to_sql(self, value: str) -> str:
         text = str(value or "").strip()
         if text.startswith("```"):
+            fence = re.search(r"```(?:sql)?\s*(.*?)```", text, flags=re.I | re.S)
             if fence:
                 text = fence.group(1).strip()
         text = text.rstrip(";").strip()
         if not text:
-            raise ValueError("LLM returned empty TO_SQL")
+            raise ValueError("LLM returned empty SQL")
         return text
+
+    # Generate BIND_SQL from FR_SQL/EDIT_FR_SQL with source_schema hints applied.
+    def _generate_bind_sql(self, job: dict[str, Any], to_sql: str, mapping_schema_text: str, last_error: Any = None) -> dict[str, Any]:
+        edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
+        fr_sql = str(job.get("fr_sql") or "").strip()
+        source_sql = edit_fr_sql if edit_fr_sql else fr_sql
+        if not source_sql:
+            return {"ok": False, "status": "FAIL-BIND", "error": "source SQL is empty"}
+
+        # TARGET_TABLE FR_TABLE values are used to decide where source_schema should be attached.
+        fr_tables = self._extract_target_fr_tables(job.get("target_table"))
+        source_schema = str(self.source_schema or "").strip().upper()
+        if source_schema:
+            for table_name in fr_tables:
+                clean_table = str(table_name or "").strip().strip('"')
+                if not clean_table or "." in clean_table:
+                    continue
+                source_sql = re.sub(rf"(?<![A-Z0-9_$#.]){re.escape(clean_table)}(?![A-Z0-9_$#])", f"{source_schema}.{clean_table}", source_sql, flags=re.I)
+
+        prompt = self._render_bind_sql_prompt(
+            from_sql=source_sql,
+            to_sql=to_sql,
+            mapping_schema_text=mapping_schema_text,
+            source_schema=source_schema or "UNKNOWN",
+            target_schema=str(self.target_schema or "").strip() or "UNKNOWN",
+            last_error=str(last_error or "None"),
+        )
+        bind_sql = self._sanitize_to_sql(self._call_llm(prompt))
+        return {"ok": True, "status": "SUCCESS-BIND", "bind_sql": bind_sql}
+
+    # Generate TEST_SQL from FR_SQL, TO_SQL, mapping rules, and BIND_SET.
+    def _generate_test_sql(self, job: dict[str, Any], to_sql: str, bind_sql: str, bind_set: str, mapping_schema_text: str, last_error: Any = None) -> dict[str, Any]:
+        edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
+        fr_sql = str(job.get("fr_sql") or "").strip()
+        source_sql = edit_fr_sql if edit_fr_sql else fr_sql
+        if not source_sql:
+            return {"ok": False, "status": "FAIL-TEST", "error": "source SQL is empty"}
+        if not to_sql:
+            return {"ok": False, "status": "FAIL-TEST", "error": "TO_SQL is empty"}
+        if not bind_set:
+            return {"ok": False, "status": "FAIL-TEST", "error": "BIND_SET is empty"}
+
+        prompt = self._render_test_sql_prompt(
+            from_sql=source_sql,
+            to_sql=to_sql,
+            bind_sql=bind_sql,
+            bind_set=bind_set,
+            mapping_schema_text=mapping_schema_text,
+            source_schema=str(self.source_schema or "").strip() or "UNKNOWN",
+            target_schema=str(self.target_schema or "").strip() or "UNKNOWN",
+            last_error=str(last_error or "None"),
+        )
+        test_sql = self._sanitize_to_sql(self._call_llm(prompt))
+        return {"ok": True, "status": "TEST_SQL_GENERATED", "test_sql": test_sql}
+
+    # Execute BIND_SQL and return rows as a JSON string like [{column: value}].
+    def _execute_bind_sql(self, bind_sql: str) -> dict[str, Any]:
+        clean_sql = self._prepare_runtime_sql(bind_sql, "EXECUTE_BIND_SQL")
+        if not clean_sql:
+            raise ValueError("BIND_SQL is empty")
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(clean_sql)
+            columns = [desc[0] for desc in cur.description] if cur.description else []
+            rows = cur.fetchmany(20)
+        result_rows = [{str(columns[i] if i < len(columns) else i): self._json_value(value) for i, value in enumerate(row)} for row in rows]
+        bind_set = json.dumps(result_rows, ensure_ascii=False)
+        return {"ok": True, "status": "SUCCESS-BIND", "row_count": len(result_rows), "bind_set": bind_set}
+
+    # Execute TEST_SQL and verify FROM_COUNT equals TO_COUNT for every CASE_NO.
+    def _execute_test_sql(self, test_sql: str) -> dict[str, Any]:
+        clean_sql = self._prepare_runtime_sql(test_sql, "EXECUTE_TEST_SQL")
+        if not clean_sql:
+            raise ValueError("TEST_SQL is empty")
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(clean_sql)
+            columns = [desc[0] for desc in cur.description] if cur.description else []
+            rows = cur.fetchall()
+        result_rows = [{str(columns[i] if i < len(columns) else i): self._json_value(value) for i, value in enumerate(row)} for row in rows]
+        if not result_rows:
+            return {"ok": False, "status": "FAIL-TEST", "message": "TEST_SQL returned no rows", "result_rows": result_rows}
+        sample_keys = {str(key).lower() for key in result_rows[0].keys()}
+        if not {"case_no", "from_count", "to_count"}.issubset(sample_keys):
+            return {"ok": False, "status": "FAIL-TEST", "message": f"TEST_SQL must return CASE_NO, FROM_COUNT, TO_COUNT. Actual columns: {sorted(sample_keys)}", "result_rows": result_rows}
+        for row in result_rows:
+            from_count = self._get_row_value(row, "FROM_COUNT")
+            to_count = self._get_row_value(row, "TO_COUNT")
+            if str(from_count).strip() != str(to_count).strip():
+                return {"ok": False, "status": "FAIL-TEST", "message": f"Count mismatch: {row}", "result_rows": result_rows}
+        return {"ok": True, "status": "PASS-CONVERSION", "message": "All test counts matched", "result_rows": result_rows}
+
+    # Save generated SQL artifacts to NEXT_SQL_INFO only at final success/failure time.
+    def _save_final_sql(self, sql_id: str, space_nm: str, to_sql: str, bind_sql: str, bind_set: str, test_sql: str) -> None:
+        assignments = []
+        params: list[Any] = []
+        for column, value in (("TO_SQL", to_sql), ("BIND_SQL", bind_sql), ("BIND_SET", bind_set), ("TEST_SQL", test_sql)):
+            clean_value = str(value or "").strip()
+            if clean_value:
+                params.append(clean_value)
+                assignments.append(f"{column} = :{len(params)}")
+        if not assignments:
+            return
+        params.extend([space_nm, sql_id])
+        table = self._qualify_table("NEXT_SQL_INFO", self.system_schema)
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                UPDATE {table}
+                SET {", ".join(assignments)},
+                    UPD_TS = CURRENT_TIMESTAMP
+                WHERE SPACE_NM = :{len(params) - 1}
+                  AND SQL_ID = :{len(params)}
+                """,
+                params,
+            )
+            conn.commit()
+
+    # Save final STATUS_CONVERSION/STATUS_TUNING plus retry and batch count to NEXT_SQL_INFO.
+    def _update_job_status(self, sql_id: str, space_nm: str, status_conversion: str, elapsed_seconds: int, retry_count: int, status_tuning: str | None = None) -> None:
+        assignments = ["STATUS_CONVERSION = :1", "RETRY_COUNT = :2", "BATCH_CNT = NVL(BATCH_CNT, 0) + 1", "LOG = :3", "UPD_TS = CURRENT_TIMESTAMP"]
+        params: list[Any] = [status_conversion, retry_count, f"STATUS_CONVERSION={status_conversion}; elapsed={elapsed_seconds}s; retry={retry_count}"]
+        if status_tuning:
+            params.append(status_tuning)
+            assignments.append(f"STATUS_TUNING = :{len(params)}")
+        params.extend([space_nm, sql_id])
+        table = self._qualify_table("NEXT_SQL_INFO", self.system_schema)
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                UPDATE {table}
+                SET {", ".join(assignments)}
+                WHERE SPACE_NM = :{len(params) - 1}
+                  AND SQL_ID = :{len(params)}
+                """,
+                params,
+            )
+            conn.commit()
+
+    # Append SQL Conversion stage history to NEXT_SQL_LOG.
+    def _write_log(self, sql_id: str, space_nm: str, sql_kind: str, status: str, stage_name: str, message: str, retry_count: int = 0, sql_content: str | None = None, elapsed_seconds: int | None = None, prompt_name: str | None = None) -> None:
+        table = self._qualify_table("NEXT_SQL_LOG", self.system_schema)
+        try:
+            with self._connect() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    f"""
+                    INSERT INTO {table} (
+                        CREATED_AT, SPACE_NM, SQL_ID, SQL_KIND, SQL_CONTENT,
+                        STATUS, PROMPT_NAME, MODEL_NAME, ELAPSED_SECONDS,
+                        ATTEMPT_NO, STAGE_NAME, ERROR_MESSAGE
+                    ) VALUES (
+                        CURRENT_TIMESTAMP, :1, :2, :3, :4,
+                        :5, :6, :7, :8,
+                        :9, :10, :11
+                    )
+                    """,
+                    [
+                        str(space_nm or "")[:200],
+                        str(sql_id or "")[:200],
+                        str(sql_kind or "")[:30],
+                        sql_content,
+                        str(status or "")[:20],
+                        str(prompt_name or "")[:120] if prompt_name else None,
+                        str(self.llm_model or "")[:120] if self.llm_model else None,
+                        elapsed_seconds,
+                        retry_count,
+                        str(stage_name or "")[:100],
+                        str(message or "")[:3900],
+                    ],
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+    # Prepare runtime SQL by rejecting MyBatis tags and normalizing LIMIT/FETCH clauses.
+    def _prepare_runtime_sql(self, sql_text: str, stage: str) -> str:
+        clean_sql = self._sanitize_to_sql(sql_text)
+        lowered = clean_sql.lower()
+        for token in ("<if", "<choose", "<when", "<otherwise", "<where", "<trim", "#{", "${"):
+            if token in lowered:
+                raise ValueError(f"{stage} generated non-executable SQL containing '{token}'")
+        limit_match = re.search(r"\s+LIMIT\s+(\d+)\s*$", clean_sql, flags=re.I)
+        if limit_match:
+            limit = int(limit_match.group(1))
+            inner = re.sub(r"\s+LIMIT\s+\d+\s*$", "", clean_sql, flags=re.I).strip()
+            clean_sql = f"SELECT * FROM ({inner}) WHERE ROWNUM <= {limit}"
+        fetch_match = re.search(r"\s+FETCH\s+FIRST\s+(\d+)\s+ROWS\s+ONLY\s*$", clean_sql, flags=re.I)
+        if fetch_match:
+            limit = int(fetch_match.group(1))
+            inner = re.sub(r"\s+FETCH\s+FIRST\s+\d+\s+ROWS\s+ONLY\s*$", "", clean_sql, flags=re.I).strip()
+            clean_sql = f"SELECT * FROM ({inner}) WHERE ROWNUM <= {limit}"
+        return clean_sql
+
+    # Read a dict row value using case-insensitive column matching.
+    def _get_row_value(self, row: dict[str, Any], key: str) -> Any:
+        if key in row:
+            return row[key]
+        lowered = key.lower()
+        for existing_key, value in row.items():
+            if str(existing_key).lower() == lowered:
+                return value
+        return None
+
+    # Convert DB values into JSON-serializable values.
+    def _json_value(self, value: Any) -> Any:
+        if value is None:
+            return None
+        if hasattr(value, "read"):
+            value = value.read()
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="ignore")
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        return str(value)
+
+    # Keep action step summaries small by excluding large SQL bodies.
+    def _summary_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        summary = {"ok": bool(result.get("ok")), "status": result.get("status")}
+        for key in ["message", "error", "row_count", "elapsed_seconds", "retry_count"]:
+            if key in result:
+                summary[key] = result.get(key)
+        return summary
 
     # TARGET_TABLE JSON 배열에서 FR_TABLE 목록을 꺼낸다.
     def _extract_target_fr_tables(self, value: Any) -> list[str]:
