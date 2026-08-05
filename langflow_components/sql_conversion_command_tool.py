@@ -493,7 +493,8 @@ class SqlConversionCommandTool(Component):
             last_failure: dict[str, Any] = {}
             to_sql_executed = False
             bind_sql_executed = False
-
+            test_sql_executed = False
+            # ===========================SQL Conversion 단계별 실행 ===========================
             # attempt는 1부터 시작하고, retry_count/ATTEMPT_NO는 로그 기준으로 0부터 시작한다.
             for attempt in range(1, max_attempts + 1):
                 retry_count = attempt - 1
@@ -502,7 +503,7 @@ class SqlConversionCommandTool(Component):
                 user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
                 tag_kind = str(job.get("tag_kind") or "").strip().upper()
 
-                # TO_SQL 단계: USER_EDITED=Y이면 DB에 저장된 TO_SQL을 그대로 쓰고, 아니면 LLM으로 생성한다.
+                # [TO_SQL 단계: USER_EDITED=Y이면 DB에 저장된 TO_SQL을 그대로 쓰고, 아니면 LLM으로 생성한다.]
                 if not to_sql_executed:
                     # user_edited가 Y이면 사용자가 저장한 TO_SQL을 그대로 사용한다.
                     if user_edited:
@@ -578,59 +579,62 @@ class SqlConversionCommandTool(Component):
                         break
 
                 # TEST_SQL 단계: TO_SQL과 BIND_SET을 기준으로 FROM_COUNT/TO_COUNT 비교 SQL을 만들고 실행한다.
-                try:
-                    test_result = self._generate_test_sql(space_nm, sql_id, last_to_sql, last_bind_sql, last_bind_set, last_failure.get("error", ""))
-                    steps.append({"step": "generate_test_sql", "attempt": attempt, **self._summary_result(test_result)})
-                    if not test_result.get("ok"):
-                        last_failure = {"status": "FAIL-TEST", "error": test_result.get("error") or "TEST_SQL generation failed"}
-                        self._write_log(sql_id, space_nm, "TEST_SQL", "FAIL", "GENERATE_TEST_SQL", str(last_failure["error"])[:3900], retry_count, last_test_sql, int(time.perf_counter() - started), "TEST_SQL_PROMPT")
+                if not test_sql_executed:
+                    try:
+                        test_result = self._generate_test_sql(space_nm, sql_id, last_to_sql, last_bind_sql, last_bind_set, last_failure.get("error", ""))
+                        steps.append({"step": "generate_test_sql", "attempt": attempt, **self._summary_result(test_result)})
+                        if not test_result.get("ok"):
+                            last_failure = {"status": "FAIL-TEST", "error": test_result.get("error") or "TEST_SQL generation failed"}
+                            self._write_log(sql_id, space_nm, "TEST_SQL", "FAIL", "GENERATE_TEST_SQL", str(last_failure["error"])[:3900], retry_count, last_test_sql, int(time.perf_counter() - started), "TEST_SQL_PROMPT")
+                            if attempt < max_attempts:
+                                continue
+                            break
+                        last_test_sql = str(test_result.get("test_sql") or "").strip()
+                        self._write_log(sql_id, space_nm, "TEST_SQL", "PASS", "GENERATE_TEST_SQL", "TEST_SQL generated", retry_count, last_test_sql, int(time.perf_counter() - started), "TEST_SQL_PROMPT")
+
+                        clean_test_sql = self._prepare_runtime_sql(last_test_sql, "EXECUTE_TEST_SQL")
+                        if not clean_test_sql:
+                            raise ValueError("TEST_SQL is empty")
+                        with self._connect() as conn:
+                            cur = conn.cursor()
+                            cur.execute(clean_test_sql)
+                            columns = [desc[0] for desc in cur.description] if cur.description else []
+                            rows = cur.fetchall()
+                        result_rows = [{str(columns[i] if i < len(columns) else i): self._json_value(value) for i, value in enumerate(row)} for row in rows]
+                        if not result_rows:
+                            test_exec_result = {"ok": False, "status": "FAIL-TEST", "message": "TEST_SQL returned no rows", "result_rows": result_rows}
+                        else:
+                            sample_keys = {str(key).lower() for key in result_rows[0].keys()}
+                            if not {"case_no", "from_count", "to_count"}.issubset(sample_keys):
+                                test_exec_result = {"ok": False, "status": "FAIL-TEST", "message": f"TEST_SQL must return CASE_NO, FROM_COUNT, TO_COUNT. Actual columns: {sorted(sample_keys)}", "result_rows": result_rows}
+                            else:
+                                test_exec_result = {"ok": True, "status": "PASS-CONVERSION", "message": "All test counts matched", "result_rows": result_rows}
+                                for row in result_rows:
+                                    from_count = self._get_row_value(row, "FROM_COUNT")
+                                    to_count = self._get_row_value(row, "TO_COUNT")
+                                    if str(from_count).strip() != str(to_count).strip():
+                                        test_exec_result = {"ok": False, "status": "FAIL-TEST", "message": f"Count mismatch: {row}", "result_rows": result_rows}
+                                        break
+                        steps.append({"step": "execute_test_sql", "attempt": attempt, **self._summary_result(test_exec_result)})
+                        if test_exec_result.get("ok"):
+                            test_sql_executed = True
+                            elapsed = int(time.perf_counter() - started)
+                            self._save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
+                            self._update_job_status(sql_id, space_nm, "PASS-CONVERSION", elapsed, retry_count, status_tuning="READY")
+                            self._write_log(sql_id, space_nm, "TEST_SQL", "PASS", "EXECUTE_TEST_SQL", "SQL Conversion test passed", retry_count, last_test_sql, elapsed)
+                            return {"ok": True, "space_nm": space_nm, "sql_id": sql_id, "status": "PASS-CONVERSION", "status_tuning": "READY", "elapsed_seconds": elapsed, "retry_count": retry_count, "steps": steps, "to_sql": last_to_sql, "bind_sql": last_bind_sql, "bind_set": last_bind_set, "test_sql": last_test_sql, "test_rows": test_exec_result.get("result_rows"), "map_ids": map_ids, "fr_tables": fr_tables, "rag_rule_count": rag_rule_count}
+                        last_failure = {"status": "FAIL-TEST", "error": test_exec_result.get("message") or "TEST_SQL validation failed"}
+                        self._write_log(sql_id, space_nm, "TEST_SQL", "FAIL", "EXECUTE_TEST_SQL", str(last_failure["error"])[:3900], retry_count, last_test_sql, int(time.perf_counter() - started))
                         if attempt < max_attempts:
                             continue
                         break
-                    last_test_sql = str(test_result.get("test_sql") or "").strip()
-                    self._write_log(sql_id, space_nm, "TEST_SQL", "PASS", "GENERATE_TEST_SQL", "TEST_SQL generated", retry_count, last_test_sql, int(time.perf_counter() - started), "TEST_SQL_PROMPT")
-                    clean_test_sql = self._prepare_runtime_sql(last_test_sql, "EXECUTE_TEST_SQL")
-                    if not clean_test_sql:
-                        raise ValueError("TEST_SQL is empty")
-                    with self._connect() as conn:
-                        cur = conn.cursor()
-                        cur.execute(clean_test_sql)
-                        columns = [desc[0] for desc in cur.description] if cur.description else []
-                        rows = cur.fetchall()
-                    result_rows = [{str(columns[i] if i < len(columns) else i): self._json_value(value) for i, value in enumerate(row)} for row in rows]
-                    if not result_rows:
-                        test_exec_result = {"ok": False, "status": "FAIL-TEST", "message": "TEST_SQL returned no rows", "result_rows": result_rows}
-                    else:
-                        sample_keys = {str(key).lower() for key in result_rows[0].keys()}
-                        if not {"case_no", "from_count", "to_count"}.issubset(sample_keys):
-                            test_exec_result = {"ok": False, "status": "FAIL-TEST", "message": f"TEST_SQL must return CASE_NO, FROM_COUNT, TO_COUNT. Actual columns: {sorted(sample_keys)}", "result_rows": result_rows}
-                        else:
-                            test_exec_result = {"ok": True, "status": "PASS-CONVERSION", "message": "All test counts matched", "result_rows": result_rows}
-                            for row in result_rows:
-                                from_count = self._get_row_value(row, "FROM_COUNT")
-                                to_count = self._get_row_value(row, "TO_COUNT")
-                                if str(from_count).strip() != str(to_count).strip():
-                                    test_exec_result = {"ok": False, "status": "FAIL-TEST", "message": f"Count mismatch: {row}", "result_rows": result_rows}
-                                    break
-                    steps.append({"step": "execute_test_sql", "attempt": attempt, **self._summary_result(test_exec_result)})
-                    if test_exec_result.get("ok"):
-                        elapsed = int(time.perf_counter() - started)
-                        self._save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
-                        self._update_job_status(sql_id, space_nm, "PASS-CONVERSION", elapsed, retry_count, status_tuning="READY")
-                        self._write_log(sql_id, space_nm, "TEST_SQL", "PASS", "EXECUTE_TEST_SQL", "SQL Conversion test passed", retry_count, last_test_sql, elapsed)
-                        return {"ok": True, "space_nm": space_nm, "sql_id": sql_id, "status": "PASS-CONVERSION", "status_tuning": "READY", "elapsed_seconds": elapsed, "retry_count": retry_count, "steps": steps, "to_sql": last_to_sql, "bind_sql": last_bind_sql, "bind_set": last_bind_set, "test_sql": last_test_sql, "test_rows": test_exec_result.get("result_rows"), "map_ids": map_ids, "fr_tables": fr_tables, "rag_rule_count": rag_rule_count}
-                    last_failure = {"status": "FAIL-TEST", "error": test_exec_result.get("message") or "TEST_SQL validation failed"}
-                    self._write_log(sql_id, space_nm, "TEST_SQL", "FAIL", "EXECUTE_TEST_SQL", str(last_failure["error"])[:3900], retry_count, last_test_sql, int(time.perf_counter() - started))
-                    if attempt < max_attempts:
-                        continue
-                    break
-                except Exception as exc:
-                    last_failure = {"status": "FAIL-TEST", "error": str(exc)}
-                    steps.append({"step": "execute_test_sql", "attempt": attempt, "ok": False, **last_failure})
-                    self._write_log(sql_id, space_nm, "TEST_SQL", "FAIL", "EXECUTE_TEST_SQL", str(exc)[:3900], retry_count, last_test_sql, int(time.perf_counter() - started))
-                    if attempt < max_attempts:
-                        continue
-                    break
+                    except Exception as exc:
+                        last_failure = {"status": "FAIL-TEST", "error": str(exc)}
+                        steps.append({"step": "execute_test_sql", "attempt": attempt, "ok": False, **last_failure})
+                        self._write_log(sql_id, space_nm, "TEST_SQL", "FAIL", "EXECUTE_TEST_SQL", str(exc)[:3900], retry_count, last_test_sql, int(time.perf_counter() - started))
+                        if attempt < max_attempts:
+                            continue
+                        break
 
             # 모든 재시도가 PASS 없이 끝나면 마지막 실패 상태와 생성된 SQL을 저장한다.
             final_status = str(last_failure.get("status") or "FAIL-CONVERSION")

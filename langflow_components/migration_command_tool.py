@@ -15,7 +15,6 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import IntInput, MessageTextInput, SecretStrInput, StrInput, Output
 from lfx.schema.data import Data
 
-
 class MigrationCommandTool(Component):
     display_name = "Migration Command Tool"
     description = "Controls SmartMigration DB migration jobs through Oracle metadata tables."
@@ -332,7 +331,7 @@ class MigrationCommandTool(Component):
         job = self._load_job(map_id)
         if not job:
             return {"ok": False, "map_id": map_id, "error": "job not found"}
-        
+
         user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
         existing_mig_sql = str(job.get("mig_sql") or "").strip()
         if user_edited:
@@ -680,6 +679,8 @@ class MigrationCommandTool(Component):
             last_failure: dict[str, Any] = {}
             # mig_executed는 한 번 MIG_SQL 실행에 성공하면 같은 run 안에서 다시 insert하지 않도록 한다.
             mig_executed = False
+            # verify_sql_executed는 VERIFY_SQL 검증이 성공한 뒤에는 검증 단계를 다시 타지 않도록 표시한다.
+            verify_sql_executed = False
             last_retry_count = 0
 
             # attempt는 1부터 시작하고, retry_count는 DB/로그 기준으로 0부터 시작한다.
@@ -756,91 +757,94 @@ class MigrationCommandTool(Component):
                             continue
                         break
 
-                job = self._load_job(map_id) or job
-                user_edited = str(job.get("user_edited") or "").upper() == "Y"
-                # VERIFY_SQL은 MIG_SQL 실행 이후의 최신 DB row를 다시 읽은 뒤 결정한다.
-                verify_sql = str(job.get("verify_sql") or "").strip()
+                # VERIFY_SQL 검증도 단계 완료 여부를 변수로 두어 MIG_SQL/BIND_SQL 흐름과 맞춘다.
+                if not verify_sql_executed:
+                    job = self._load_job(map_id) or job
+                    user_edited = str(job.get("user_edited") or "").upper() == "Y"
+                    # VERIFY_SQL은 MIG_SQL 실행 이후의 최신 DB row를 다시 읽은 뒤 결정한다.
+                    verify_sql = str(job.get("verify_sql") or "").strip()
 
-                # 사용자 수정 VERIFY_SQL이 있으면 LLM 생성을 건너뛰고 저장된 SQL을 사용한다.
-                if user_edited and verify_sql:
-                    last_verify_sql = verify_sql
-                    steps.append({"step": "generate_verify_sql", "attempt": attempt, "status": "SKIPPED_USER_EDITED"})
-                else:
-                    # VERIFY_SQL 생성도 이전 실패 정보를 같이 넘겨 retry prompt 품질을 높인다.
-                    verify_command = {
-                        "retry_count": retry_count,
-                        "last_error": last_failure.get("error", ""),
-                        "last_sql": last_verify_sql,
-                    }
-                    verify_result = self._generate_verify_sql(map_id, verify_command)
-                    steps.append({"step": "generate_verify_sql", "attempt": attempt, **self._summary_result(verify_result)})
+                    # 사용자 수정 VERIFY_SQL이 있으면 LLM 생성을 건너뛰고 저장된 SQL을 사용한다.
+                    if user_edited and verify_sql:
+                        last_verify_sql = verify_sql
+                        steps.append({"step": "generate_verify_sql", "attempt": attempt, "status": "SKIPPED_USER_EDITED"})
+                    else:
+                        # VERIFY_SQL 생성도 이전 실패 정보를 같이 넘겨 retry prompt 품질을 높인다.
+                        verify_command = {
+                            "retry_count": retry_count,
+                            "last_error": last_failure.get("error", ""),
+                            "last_sql": last_verify_sql,
+                        }
+                        verify_result = self._generate_verify_sql(map_id, verify_command)
+                        steps.append({"step": "generate_verify_sql", "attempt": attempt, **self._summary_result(verify_result)})
 
-                    # VERIFY_SQL 생성 실패는 검증 실패 단계로 보고 남은 attempt가 있으면 재시도한다.
-                    if not verify_result.get("ok"):
-                        last_failure = {"status": "FAIL-TEST", "error": verify_result.get("error") or "VERIFY_SQL generation failed"}
-                        self._write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "GENERATE_VERIFY_SQL", "FAIL-TEST", str(last_failure["error"])[:3900], retry_count)
+                        # VERIFY_SQL 생성 실패는 검증 실패 단계로 보고 남은 attempt가 있으면 재시도한다.
+                        if not verify_result.get("ok"):
+                            last_failure = {"status": "FAIL-TEST", "error": verify_result.get("error") or "VERIFY_SQL generation failed"}
+                            self._write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "GENERATE_VERIFY_SQL", "FAIL-TEST", str(last_failure["error"])[:3900], retry_count)
+                            if attempt < max_attempts:
+                                continue
+                            break
+
+                        # 생성에 성공한 VERIFY_SQL은 최종 저장 후보로 보관하고 생성 로그를 남긴다.
+                        last_verify_sql = str(verify_result.get("verify_sql") or "")
+                        self._write_log(
+                            map_id,
+                            "GENERATE_SQL",
+                            "INFO",
+                            "GENERATE_VERIFY_SQL",
+                            "PASS",
+                            "VERIFY_SQL generated",
+                            retry_count,
+                            last_verify_sql,
+                        )
+
+                    try:
+                        # 검증 실행 함수는 job dict 안의 verify_sql을 읽으므로 최신 SQL을 병합해서 넘긴다.
+                        job = {**job, "verify_sql": last_verify_sql}
+                        verify_sql = self._sanitize_verify_sql(str(job.get("verify_sql") or ""))
+                        verify_ok, verify_message, rows = self._execute_verify_sql_with_rows(verify_sql)
+                        verify_exec_result = {
+                            "ok": verify_ok,
+                            "map_id": map_id,
+                            "status": "PASS" if verify_ok else "FAIL-TEST",
+                            "message": verify_message,
+                            "verify_sql": verify_sql,
+                            "result_rows": rows,
+                        }
+                        steps.append({"step": "execute_verify_sql", "attempt": attempt, **self._summary_result(verify_exec_result)})
+
+                        # 검증이 통과하면 최종 SQL과 PASS 상태를 저장하고 즉시 성공 반환한다.
+                        if verify_exec_result.get("ok"):
+                            verify_sql_executed = True
+                            elapsed = int(time.perf_counter() - started)
+                            self._save_final_sql(map_id, last_mig_sql, last_verify_sql)
+                            self._update_job_status(map_id, "PASS", elapsed, retry_count)
+                            self._write_log(map_id, "VERIFY_SQL", "INFO", "VERIFY", "PASS", "Migration Success", retry_count, verify_exec_result.get("verify_sql"))
+                            return {
+                                "ok": True,
+                                "map_id": map_id,
+                                "status": "PASS",
+                                "message": "Migration completed",
+                                "elapsed_seconds": elapsed,
+                                "retry_count": retry_count,
+                                "steps": steps,
+                            }
+
+                        # 검증 결과가 ok=False이면 FAIL-TEST 후보로 기록하고 남은 attempt가 있으면 재시도한다.
+                        last_failure = {"status": "FAIL-TEST", "error": verify_exec_result.get("message") or "Verification failed"}
+                        self._write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "VERIFY", "FAIL-TEST", str(last_failure["error"])[:3900], retry_count, verify_exec_result.get("verify_sql"))
                         if attempt < max_attempts:
                             continue
                         break
-
-                    # 생성에 성공한 VERIFY_SQL은 최종 저장 후보로 보관하고 생성 로그를 남긴다.
-                    last_verify_sql = str(verify_result.get("verify_sql") or "")
-                    self._write_log(
-                        map_id,
-                        "GENERATE_SQL",
-                        "INFO",
-                        "GENERATE_VERIFY_SQL",
-                        "PASS",
-                        "VERIFY_SQL generated",
-                        retry_count,
-                        last_verify_sql,
-                    )
-
-                try:
-                    # 검증 실행 함수는 job dict 안의 verify_sql을 읽으므로 최신 SQL을 병합해서 넘긴다.
-                    job = {**job, "verify_sql": last_verify_sql}
-                    verify_sql = self._sanitize_verify_sql(str(job.get("verify_sql") or ""))
-                    verify_ok, verify_message, rows = self._execute_verify_sql_with_rows(verify_sql)
-                    verify_exec_result = {
-                        "ok": verify_ok,
-                        "map_id": map_id,
-                        "status": "PASS" if verify_ok else "FAIL-TEST",
-                        "message": verify_message,
-                        "verify_sql": verify_sql,
-                        "result_rows": rows,
-                    }
-                    steps.append({"step": "execute_verify_sql", "attempt": attempt, **self._summary_result(verify_exec_result)})
-
-                    # 검증이 통과하면 최종 SQL과 PASS 상태를 저장하고 즉시 성공 반환한다.
-                    if verify_exec_result.get("ok"):
-                        elapsed = int(time.perf_counter() - started)
-                        self._save_final_sql(map_id, last_mig_sql, last_verify_sql)
-                        self._update_job_status(map_id, "PASS", elapsed, retry_count)
-                        self._write_log(map_id, "VERIFY_SQL", "INFO", "VERIFY", "PASS", "Migration Success", retry_count, verify_exec_result.get("verify_sql"))
-                        return {
-                            "ok": True,
-                            "map_id": map_id,
-                            "status": "PASS",
-                            "message": "Migration completed",
-                            "elapsed_seconds": elapsed,
-                            "retry_count": retry_count,
-                            "steps": steps,
-                        }
-
-                    # 검증 결과가 ok=False이면 FAIL-TEST 후보로 기록하고 남은 attempt가 있으면 재시도한다.
-                    last_failure = {"status": "FAIL-TEST", "error": verify_exec_result.get("message") or "Verification failed"}
-                    self._write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "VERIFY", "FAIL-TEST", str(last_failure["error"])[:3900], retry_count, verify_exec_result.get("verify_sql"))
-                    if attempt < max_attempts:
-                        continue
-                    break
-                except Exception as exc:
-                    # 검증 SQL 실행 자체가 예외를 내도 FAIL-TEST 후보로 기록한다.
-                    last_failure = {"status": "FAIL-TEST", "error": str(exc)}
-                    steps.append({"step": "execute_verify_sql", "attempt": attempt, "ok": False, **last_failure})
-                    self._write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "VERIFY", "FAIL-TEST", str(exc)[:3900], retry_count, str(job.get("verify_sql") or ""))
-                    if attempt < max_attempts:
-                        continue
-                    break
+                    except Exception as exc:
+                        # 검증 SQL 실행 자체가 예외를 내도 FAIL-TEST 후보로 기록한다.
+                        last_failure = {"status": "FAIL-TEST", "error": str(exc)}
+                        steps.append({"step": "execute_verify_sql", "attempt": attempt, "ok": False, **last_failure})
+                        self._write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "VERIFY", "FAIL-TEST", str(exc)[:3900], retry_count, str(job.get("verify_sql") or ""))
+                        if attempt < max_attempts:
+                            continue
+                        break
 
             # 모든 attempt가 끝났는데 PASS가 아니면 마지막 실패 status로 최종 상태를 저장한다.
             final_status = str(last_failure.get("status") or "FAIL")
@@ -1528,7 +1532,6 @@ class MigrationCommandTool(Component):
             statements.append(tail)
         return statements
 
-
     # command JSON에서 받은 문자열/숫자 값을 bool로 해석한다.
     def _as_bool(self, value: Any) -> bool:
         if isinstance(value, bool):
@@ -1548,7 +1551,6 @@ class MigrationCommandTool(Component):
         if not re.fullmatch(r"[A-Z][A-Z0-9_$#]*", clean_schema):
             raise ValueError(f"Invalid schema: {clean_schema}")
         return f"{clean_schema}.{clean}"
-
 
     # DB에서 가져온 CLOB/bytes/None 값을 일반 문자열로 변환한다.
     def _to_text(self, value: Any) -> str:
