@@ -30,3 +30,6 @@ TO_SQL_PROMPT 에 파라미터도 분리해야 하면 분리하도록,, 가이�
 8) 최종 성공/실패 시점에만 NEXT_SQL_INFO의 TO_SQL, BIND_SQL, BIND_SET, TEST_SQL, STATUS_CONVERSION, STATUS_TUNING, RETRY_COUNT, BATCH_CNT를 저장한다.
 9) elapsed_seconds는 NEXT_SQL_INFO에 저장하지 않고 NEXT_SQL_LOG.ELAPSED_SECONDS에 기록한다.
 10) 이번 구현에서는 SQL_LENGTH=LONG 분기, TUNED_FR_SQL 기반 생성, RAG 참고 SQL, LAST RETRY 전용 프롬포트는 제외한다.
+11) generate_to_sql, generate_bind_sql, generate_test_sql는 채팅 반환 전용 action이다. 이 action들은 NEXT_SQL_INFO를 update하지 않는다.
+12) preview_to_sql_prompt, preview_bind_sql_prompt, preview_test_sql_prompt는 LLM을 호출하지 않고 prompt 렌더링 결과만 반환한다.
+13) run_sql_conversion_job만 최종 성공/실패 시점에 TO_SQL, BIND_SQL, BIND_SET, TEST_SQL과 STATUS_CONVERSION/STATUS_TUNING을 저장한다.

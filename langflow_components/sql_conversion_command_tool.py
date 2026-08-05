@@ -57,7 +57,7 @@ class SqlConversionCommandTool(Component):
             name="to_sql_prompt",
             display_name="TO SQL Prompt",
             required=True,
-            info="Prompt template for generate_to_sql_text. Use placeholders: {from_sql}, {mapping_schema_text}, {source_schema}, {target_schema}, {correct_sql_hint_json}, {last_error}.",
+            info="Prompt template for generate_to_sql. Use placeholders: {from_sql}, {mapping_schema_text}, {source_schema}, {target_schema}, {last_error}.",
         ),
         MessageTextInput(
             name="bind_sql_prompt",
@@ -70,12 +70,6 @@ class SqlConversionCommandTool(Component):
             display_name="TEST SQL Prompt",
             required=False,
             info="Prompt template for TEST_SQL generation. Use placeholders: {from_sql}, {to_sql}, {bind_sql}, {bind_set}, {mapping_schema_text}, {source_schema}, {target_schema}, {last_error}.",
-        ),
-        MessageTextInput(
-            name="verify_sql_prompt",
-            display_name="VERIFY SQL Prompt",
-            required=False,
-            info="Prompt template for preview_verify_prompt. Use placeholders: {from_sql}, {to_sql}, {mapping_schema_text}, {source_schema}, {target_schema}, {correct_sql_hint_json}, {last_error}.",
         ),
         StrInput(
             name="system_schema",
@@ -117,12 +111,18 @@ class SqlConversionCommandTool(Component):
                 result = self._status(command.get("space_nm"), command.get("sql_id"))
             elif action == "list_pending":
                 result = self._list_pending(command.get("limit", 20))
-            elif action == "generate_to_sql_text":
-                result = self._generate_to_sql_text(command.get("space_nm"), command.get("sql_id"), command.get("last_error"))
-            elif action == "preview_conversion_prompt":
-                result = self._preview_conversion_prompt(command.get("space_nm"), command.get("sql_id"), command.get("last_error"))
-            elif action == "preview_verify_prompt":
-                result = self._preview_verify_prompt(command.get("space_nm"), command.get("sql_id"), command.get("to_sql"), command.get("last_error"))
+            elif action == "generate_to_sql":
+                result = self._generate_to_sql(command.get("space_nm"), command.get("sql_id"), command.get("last_error"))
+            elif action == "generate_bind_sql":
+                result = self._generate_bind_sql(command.get("space_nm"), command.get("sql_id"), command.get("to_sql"), command.get("last_error"))
+            elif action == "generate_test_sql":
+                result = self._generate_test_sql(command.get("space_nm"), command.get("sql_id"), command.get("to_sql"), command.get("bind_sql"), command.get("bind_set"), command.get("last_error"))
+            elif action == "preview_to_sql_prompt":
+                result = self._preview_to_sql_prompt(command.get("space_nm"), command.get("sql_id"), command.get("last_error"))
+            elif action == "preview_bind_sql_prompt":
+                result = self._preview_bind_sql_prompt(command.get("space_nm"), command.get("sql_id"), command.get("to_sql"), command.get("last_error"))
+            elif action == "preview_test_sql_prompt":
+                result = self._preview_test_sql_prompt(command.get("space_nm"), command.get("sql_id"), command.get("to_sql"), command.get("bind_sql"), command.get("bind_set"), command.get("last_error"))
             elif action == "run_sql_conversion_job":
                 result = self.run_sql_conversion_job(command.get("sql_id"), command.get("space_nm"), command)
             else:
@@ -186,7 +186,7 @@ class SqlConversionCommandTool(Component):
         return {"ok": bool(job), "job": job, "error": "" if job else "job not found"}
 
 
-    # action="list_pending": list SQL Conversion jobs where STATUS_CONVERSION is NULL.
+    # action="list_pending": STATUS_CONVERSION이 NULL인 SQL Conversion 작업 목록을 조회한다.
     def _list_pending(self, limit: Any) -> dict[str, Any]:
         safe_limit = max(1, min(int(limit or 20), 100))
         table = self._qualify_table("NEXT_SQL_INFO", self.system_schema)
@@ -227,20 +227,8 @@ class SqlConversionCommandTool(Component):
         return {"ok": True, "count": len(jobs), "jobs": jobs}
 
 
-    # action="generate_to_sql_text": TO_SQL을 생성해서 채팅 응답으로 반환한다.
-    def _generate_to_sql_text(self, space_nm: Any, sql_id: Any, last_error: Any = None) -> dict[str, Any]:
-        return self._generate_to_sql(space_nm, sql_id, last_error=last_error)
-
-    # TO_SQL 생성 공통 함수: 채팅 요청과 job 실행 내부에서 같이 사용한다.
-    def _generate_to_sql(
-        self,
-        space_nm: Any,
-        sql_id: Any,
-        last_error: Any = None,
-        last_sql: Any = None,
-        retry_count: Any = 0,
-        force_regenerate: bool = False,
-    ) -> dict[str, Any]:
+    # action="generate_to_sql": TO_SQL을 생성해서 채팅 응답으로 반환한다. DB에는 저장하지 않는다.
+    def _generate_to_sql(self, space_nm: Any, sql_id: Any, last_error: Any = None) -> dict[str, Any]:
         job = self._load_job(space_nm, sql_id)
         if not job:
             return {"ok": False, "error": "job not found"}
@@ -257,7 +245,6 @@ class SqlConversionCommandTool(Component):
             mapping_schema_text=mapping_schema_text,
             source_schema=str(self.source_schema or "").strip() or "UNKNOWN",
             target_schema=str(self.target_schema or "").strip() or "UNKNOWN",
-            correct_sql_hint_json="[]",
             last_error=str(last_error or "None"),
         )
         to_sql = self._sanitize_to_sql(self._call_llm(prompt))
@@ -274,8 +261,82 @@ class SqlConversionCommandTool(Component):
             "to_sql": to_sql,
         }
 
-    # action="preview_conversion_prompt": LLM 호출 없이 SQL Conversion prompt를 미리 확인한다.
-    def _preview_conversion_prompt(self, space_nm: Any, sql_id: Any, last_error: Any = None) -> dict[str, Any]:
+    # action="generate_bind_sql": BIND_SQL을 생성해서 채팅 응답으로 반환한다. DB에는 저장하지 않는다.
+    def _generate_bind_sql(self, space_nm: Any, sql_id: Any, to_sql: Any = None, last_error: Any = None) -> dict[str, Any]:
+        job = self._load_job(space_nm, sql_id)
+        if not job:
+            return {"ok": False, "error": "job not found"}
+
+        final_to_sql = str(to_sql or job.get("to_sql") or "").strip()
+        if not final_to_sql:
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before generating BIND_SQL."}
+
+        edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
+        fr_sql = str(job.get("fr_sql") or "").strip()
+        source_sql = edit_fr_sql if edit_fr_sql else fr_sql
+        if not source_sql:
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "status": "FAIL-BIND", "error": "source SQL is empty"}
+
+        mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
+        try:
+            prompt = self._build_bind_sql_prompt(job, final_to_sql, mapping_schema_text, last_error)
+            bind_sql = self._sanitize_to_sql(self._call_llm(prompt))
+        except Exception as exc:
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "status": "FAIL-BIND", "error": str(exc), "db_updated": False}
+
+        return {
+            "ok": True,
+            "space_nm": job.get("space_nm"),
+            "sql_id": job.get("sql_id"),
+            "status": "SUCCESS-BIND",
+            "db_updated": False,
+            "fr_tables": fr_tables,
+            "map_ids": map_ids,
+            "rag_rule_count": rag_rule_count,
+            "bind_sql": bind_sql,
+        }
+
+    # action="generate_test_sql": TEST_SQL을 생성해서 채팅 응답으로 반환한다. DB에는 저장하지 않는다.
+    def _generate_test_sql(self, space_nm: Any, sql_id: Any, to_sql: Any = None, bind_sql: Any = None, bind_set: Any = None, last_error: Any = None) -> dict[str, Any]:
+        job = self._load_job(space_nm, sql_id)
+        if not job:
+            return {"ok": False, "error": "job not found"}
+
+        final_to_sql = str(to_sql or job.get("to_sql") or "").strip()
+        final_bind_sql = str(bind_sql or job.get("bind_sql") or "").strip()
+        final_bind_set = str(bind_set or job.get("bind_set") or "").strip()
+        if not final_to_sql:
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before generating TEST_SQL."}
+        if not final_bind_set:
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "BIND_SET is empty. Pass bind_set or run BIND_SQL before generating TEST_SQL."}
+
+        edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
+        fr_sql = str(job.get("fr_sql") or "").strip()
+        source_sql = edit_fr_sql if edit_fr_sql else fr_sql
+        if not source_sql:
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "status": "FAIL-TEST", "error": "source SQL is empty"}
+
+        mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
+        try:
+            prompt = self._build_test_sql_prompt(job, final_to_sql, final_bind_sql, final_bind_set, mapping_schema_text, last_error)
+            test_sql = self._sanitize_to_sql(self._call_llm(prompt))
+        except Exception as exc:
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "status": "FAIL-TEST", "error": str(exc), "db_updated": False}
+
+        return {
+            "ok": True,
+            "space_nm": job.get("space_nm"),
+            "sql_id": job.get("sql_id"),
+            "status": "TEST_SQL_GENERATED",
+            "db_updated": False,
+            "fr_tables": fr_tables,
+            "map_ids": map_ids,
+            "rag_rule_count": rag_rule_count,
+            "test_sql": test_sql,
+        }
+
+    # action="preview_to_sql_prompt": LLM 호출 없이 SQL Conversion prompt를 미리 확인한다.
+    def _preview_to_sql_prompt(self, space_nm: Any, sql_id: Any, last_error: Any = None) -> dict[str, Any]:
 
         job = self._load_job(space_nm, sql_id)
         if not job:
@@ -295,15 +356,14 @@ class SqlConversionCommandTool(Component):
             mapping_schema_text=mapping_schema_text,
             source_schema=str(self.source_schema or "").strip() or "UNKNOWN",
             target_schema=str(self.target_schema or "").strip() or "UNKNOWN",
-            correct_sql_hint_json="[]",
             last_error=str(last_error or "None"),
         )
         return {
             "ok": True,
-            "action": "preview_conversion_prompt",
+            "action": "preview_to_sql_prompt",
             "space_nm": job.get("space_nm"),
             "sql_id": job.get("sql_id"),
-            "prompt_kind": "conversion",
+            "prompt_kind": "to_sql",
             "prompt_length": len(prompt),
             "prompt": prompt,
             "db_updated": False,
@@ -313,54 +373,38 @@ class SqlConversionCommandTool(Component):
             "rag_rule_count": rag_rule_count,
         }
 
-
-    # action="preview_verify_prompt": LLM 호출 없이 검증 prompt를 미리 확인한다.
-    def _preview_verify_prompt(self, space_nm: Any, sql_id: Any, to_sql: Any = None, last_error: Any = None) -> dict[str, Any]:
-
+    # action="preview_bind_sql_prompt": LLM 호출 없이 BIND SQL prompt를 미리 확인한다.
+    def _preview_bind_sql_prompt(self, space_nm: Any, sql_id: Any, to_sql: Any = None, last_error: Any = None) -> dict[str, Any]:
         job = self._load_job(space_nm, sql_id)
         if not job:
             return {"ok": False, "error": "job not found"}
 
-
-        edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
-        fr_sql = str(job.get("fr_sql") or "").strip()
-        source_sql = edit_fr_sql if edit_fr_sql else fr_sql
-        to_sql = str(to_sql or job.get("to_sql") or "").strip()
-        if not source_sql:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "source SQL is empty"}
-        if not to_sql:
-            return {
-                "ok": False,
-                "space_nm": job.get("space_nm"),
-                "sql_id": job.get("sql_id"),
-                "error": "to_sql is required for preview_verify_prompt",
-            }
-
+        final_to_sql = str(to_sql or job.get("to_sql") or "").strip()
+        if not final_to_sql:
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before previewing BIND prompt."}
 
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
-        prompt = self._render_verify_prompt(
-            from_sql=source_sql,
-            to_sql=to_sql,
-            mapping_schema_text=mapping_schema_text,
-            source_schema=str(self.source_schema or "").strip() or "UNKNOWN",
-            target_schema=str(self.target_schema or "").strip() or "UNKNOWN",
-            correct_sql_hint_json="[]",
-            last_error=str(last_error or "None"),
-        )
-        return {
-            "ok": True,
-            "action": "preview_verify_prompt",
-            "space_nm": job.get("space_nm"),
-            "sql_id": job.get("sql_id"),
-            "prompt_kind": "verify",
-            "prompt_length": len(prompt),
-            "prompt": prompt,
-            "db_updated": False,
-            "llm_called": False,
-            "fr_tables": fr_tables,
-            "map_ids": map_ids,
-            "rag_rule_count": rag_rule_count,
-        }
+        prompt = self._build_bind_sql_prompt(job, final_to_sql, mapping_schema_text, last_error)
+        return {"ok": True, "action": "preview_bind_sql_prompt", "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "prompt_kind": "bind", "prompt_length": len(prompt), "prompt": prompt, "db_updated": False, "llm_called": False, "fr_tables": fr_tables, "map_ids": map_ids, "rag_rule_count": rag_rule_count}
+
+    # action="preview_test_sql_prompt": LLM 호출 없이 TEST SQL prompt를 미리 확인한다.
+    def _preview_test_sql_prompt(self, space_nm: Any, sql_id: Any, to_sql: Any = None, bind_sql: Any = None, bind_set: Any = None, last_error: Any = None) -> dict[str, Any]:
+        job = self._load_job(space_nm, sql_id)
+        if not job:
+            return {"ok": False, "error": "job not found"}
+
+        final_to_sql = str(to_sql or job.get("to_sql") or "").strip()
+        final_bind_sql = str(bind_sql or job.get("bind_sql") or "").strip()
+        final_bind_set = str(bind_set or job.get("bind_set") or "").strip()
+        if not final_to_sql:
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before previewing TEST prompt."}
+        if not final_bind_set:
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "BIND_SET is empty. Pass bind_set or run BIND_SQL before previewing TEST prompt."}
+
+        mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
+        prompt = self._build_test_sql_prompt(job, final_to_sql, final_bind_sql, final_bind_set, mapping_schema_text, last_error)
+        return {"ok": True, "action": "preview_test_sql_prompt", "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "prompt_kind": "test", "prompt_length": len(prompt), "prompt": prompt, "db_updated": False, "llm_called": False, "fr_tables": fr_tables, "map_ids": map_ids, "rag_rule_count": rag_rule_count}
+
 
     # action="run_sql_conversion_job": TO_SQL 생성, BIND_SQL 실행, TEST_SQL 검증까지 SQL Conversion 전체 작업을 수행한다.
     def run_sql_conversion_job(self, sql_id: str, space_nm: str, command: dict[str, Any]) -> dict[str, Any]:
@@ -409,12 +453,14 @@ class SqlConversionCommandTool(Component):
 
                 # TO_SQL 단계: USER_EDITED=Y이면 DB에 저장된 TO_SQL을 그대로 쓰고, 아니면 LLM으로 생성한다.
                 if not to_sql_executed:
+                    # user_edited가 Y이면 사용자가 저장한 TO_SQL을 그대로 사용한다.
                     if user_edited:
                         to_sql = str(job.get("to_sql") or "").strip()
                         if not to_sql:
                             raise ValueError("USER_EDITED=Y but TO_SQL is empty")
                         last_to_sql = to_sql
                         steps.append({"step": "generate_to_sql", "attempt": attempt, "status": "SUCCESS-TOBE", "message": "USER_EDITED=Y. Existing TO_SQL was used."})
+                    # user_edited가 N이면 LLM으로 TO_SQL을 새로 생성한다.
                     else:
                         to_sql_result = self._generate_to_sql(space_nm, sql_id, last_error=last_failure.get("error", ""))
                         if to_sql_result.get("ok"):
@@ -427,6 +473,7 @@ class SqlConversionCommandTool(Component):
                                 continue
                             break
                         last_to_sql = str(to_sql_result.get("to_sql") or "").strip()
+                    # TO_SQL 생성이 성공하면 실행 완료 표시를 남기고, 다음 재시도에서는 TO_SQL 재생성을 건너뛴다.
                     to_sql_executed = True
                     self._write_log(sql_id, space_nm, "TO_SQL", "PASS", "GENERATE_TO_SQL", "TO_SQL generated", retry_count, last_to_sql, int(time.perf_counter() - started), "TO_SQL_PROMPT")
 
@@ -441,7 +488,7 @@ class SqlConversionCommandTool(Component):
                 # BIND_SQL 단계: FR_SQL 기준으로 bind 값을 뽑는 SELECT를 만들고 실행 결과를 BIND_SET JSON으로 보관한다.
                 if not bind_sql_executed:
                     try:
-                        bind_result = self._generate_bind_sql(job, last_to_sql, mapping_schema_text, last_failure.get("error", ""))
+                        bind_result = self._generate_bind_sql(space_nm, sql_id, last_to_sql, last_failure.get("error", ""))
                         steps.append({"step": "generate_bind_sql", "attempt": attempt, **self._summary_result(bind_result)})
                         if not bind_result.get("ok"):
                             last_failure = {"status": "FAIL-BIND", "error": bind_result.get("error") or "BIND_SQL generation failed"}
@@ -466,7 +513,7 @@ class SqlConversionCommandTool(Component):
 
                 # TEST_SQL 단계: TO_SQL과 BIND_SET을 기준으로 FROM_COUNT/TO_COUNT 비교 SQL을 만들고 실행한다.
                 try:
-                    test_result = self._generate_test_sql(job, last_to_sql, last_bind_sql, last_bind_set, mapping_schema_text, last_failure.get("error", ""))
+                    test_result = self._generate_test_sql(space_nm, sql_id, last_to_sql, last_bind_sql, last_bind_set, last_failure.get("error", ""))
                     steps.append({"step": "generate_test_sql", "attempt": attempt, **self._summary_result(test_result)})
                     if not test_result.get("ok"):
                         last_failure = {"status": "FAIL-TEST", "error": test_result.get("error") or "TEST_SQL generation failed"}
@@ -497,7 +544,7 @@ class SqlConversionCommandTool(Component):
                         continue
                     break
 
-            # If all attempts end without PASS, save the last failure status and SQL values.
+            # 모든 재시도가 PASS 없이 끝나면 마지막 실패 상태와 생성된 SQL을 저장한다.
             final_status = str(last_failure.get("status") or "FAIL-CONVERSION")
             elapsed = int(time.perf_counter() - started)
             self._save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
@@ -505,7 +552,7 @@ class SqlConversionCommandTool(Component):
             self._write_log(sql_id, space_nm, "ERROR", "FAIL", "FINAL", str(last_failure.get("error") or "Max attempts reached")[:3900], last_retry_count, last_test_sql or last_bind_sql or last_to_sql, elapsed)
             return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": final_status, "error": last_failure.get("error") or "Max attempts reached", "elapsed_seconds": elapsed, "retry_count": last_retry_count, "steps": steps}
         except Exception as exc:
-            # Unexpected exceptions are also saved as final failure with the latest SQL values.
+            # 예상하지 못한 예외도 최종 실패로 저장하고, 현재까지 생성된 SQL을 함께 남긴다.
             elapsed = int(time.perf_counter() - started)
             self._save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
             self._update_job_status(sql_id, space_nm, "FAIL-CONVERSION", elapsed, last_retry_count)
@@ -763,14 +810,13 @@ class SqlConversionCommandTool(Component):
             return ["  - No SQL_CONVERSION RAG rules loaded."]
         return lines or ["  - No SQL_CONVERSION RAG rules found for FR_TABLE hints."]
 
-    # to_sql_prompt의 placeholder를 실제 값으로 치환한다.
+    # to_sql_prompt의 자리표시자를 실제 값으로 치환한다.
     def _render_to_sql_prompt(
         self,
         from_sql: str,
         mapping_schema_text: str,
         source_schema: str,
         target_schema: str,
-        correct_sql_hint_json: str,
         last_error: str,
     ) -> str:
         template = str(self.to_sql_prompt or "").strip()
@@ -781,14 +827,13 @@ class SqlConversionCommandTool(Component):
             "mapping_schema_text": mapping_schema_text,
             "source_schema": source_schema,
             "target_schema": target_schema,
-            "correct_sql_hint_json": correct_sql_hint_json,
             "last_error": last_error,
         }
         for key, value in values.items():
             template = template.replace("{" + key + "}", str(value))
         return template
 
-    # bind_sql_prompt의 placeholder를 실제 값으로 치환한다.
+    # bind_sql_prompt의 자리표시자를 실제 값으로 치환한다.
     def _render_bind_sql_prompt(
         self,
         from_sql: str,
@@ -806,7 +851,7 @@ class SqlConversionCommandTool(Component):
             template = template.replace("{" + key + "}", str(value))
         return template
 
-    # test_sql_prompt의 placeholder를 실제 값으로 치환한다.
+    # test_sql_prompt의 자리표시자를 실제 값으로 치환한다.
     def _render_test_sql_prompt(
         self,
         from_sql: str,
@@ -822,33 +867,6 @@ class SqlConversionCommandTool(Component):
         if not template:
             raise ValueError("TEST SQL Prompt input is required for TEST_SQL generation")
         values = {"from_sql": from_sql, "to_sql": to_sql, "bind_sql": bind_sql, "bind_set": bind_set, "mapping_schema_text": mapping_schema_text, "source_schema": source_schema, "target_schema": target_schema, "last_error": last_error}
-        for key, value in values.items():
-            template = template.replace("{" + key + "}", str(value))
-        return template
-
-    # SQL 변환 검증 프롬포트의 placeholder를 실제 값으로 치환한다.
-    def _render_verify_prompt(
-        self,
-        from_sql: str,
-        to_sql: str,
-        mapping_schema_text: str,
-        source_schema: str,
-        target_schema: str,
-        correct_sql_hint_json: str,
-        last_error: str,
-    ) -> str:
-        template = str(self.verify_sql_prompt or "").strip()
-        if not template:
-            raise ValueError("VERIFY SQL Prompt input is required for SQL generation")
-        values = {
-            "from_sql": from_sql,
-            "to_sql": to_sql,
-            "mapping_schema_text": mapping_schema_text,
-            "source_schema": source_schema,
-            "target_schema": target_schema,
-            "correct_sql_hint_json": correct_sql_hint_json,
-            "last_error": last_error,
-        }
         for key, value in values.items():
             template = template.replace("{" + key + "}", str(value))
         return template
@@ -873,7 +891,7 @@ class SqlConversionCommandTool(Component):
         data = self._post_json(url, payload, {"Authorization": f"Bearer {api_key}"})
         return str(data["choices"][0]["message"].get("content", ""))
 
-    # Remove markdown code fences and the trailing semicolon from an LLM SQL response.
+    # LLM 응답에서 마크다운 코드 블록과 마지막 세미콜론을 제거한다.
     def _sanitize_to_sql(self, value: str) -> str:
         text = str(value or "").strip()
         if text.startswith("```"):
@@ -885,15 +903,14 @@ class SqlConversionCommandTool(Component):
             raise ValueError("LLM returned empty SQL")
         return text
 
-    # Generate BIND_SQL from FR_SQL/EDIT_FR_SQL with source_schema hints applied.
-    def _generate_bind_sql(self, job: dict[str, Any], to_sql: str, mapping_schema_text: str, last_error: Any = None) -> dict[str, Any]:
+    # BIND_SQL 생성과 preview가 같은 prompt를 쓰도록 prompt 구성만 한 곳에 모은다.
+    def _build_bind_sql_prompt(self, job: dict[str, Any], to_sql: str, mapping_schema_text: str, last_error: Any = None) -> str:
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
         if not source_sql:
-            return {"ok": False, "status": "FAIL-BIND", "error": "source SQL is empty"}
+            raise ValueError("source SQL is empty")
 
-        # TARGET_TABLE FR_TABLE values are used to decide where source_schema should be attached.
         fr_tables = self._extract_target_fr_tables(job.get("target_table"))
         source_schema = str(self.source_schema or "").strip().upper()
         if source_schema:
@@ -903,7 +920,7 @@ class SqlConversionCommandTool(Component):
                     continue
                 source_sql = re.sub(rf"(?<![A-Z0-9_$#.]){re.escape(clean_table)}(?![A-Z0-9_$#])", f"{source_schema}.{clean_table}", source_sql, flags=re.I)
 
-        prompt = self._render_bind_sql_prompt(
+        return self._render_bind_sql_prompt(
             from_sql=source_sql,
             to_sql=to_sql,
             mapping_schema_text=mapping_schema_text,
@@ -911,22 +928,16 @@ class SqlConversionCommandTool(Component):
             target_schema=str(self.target_schema or "").strip() or "UNKNOWN",
             last_error=str(last_error or "None"),
         )
-        bind_sql = self._sanitize_to_sql(self._call_llm(prompt))
-        return {"ok": True, "status": "SUCCESS-BIND", "bind_sql": bind_sql}
 
-    # Generate TEST_SQL from FR_SQL, TO_SQL, mapping rules, and BIND_SET.
-    def _generate_test_sql(self, job: dict[str, Any], to_sql: str, bind_sql: str, bind_set: str, mapping_schema_text: str, last_error: Any = None) -> dict[str, Any]:
+    # TEST_SQL 생성과 preview가 같은 prompt를 쓰도록 prompt 구성만 한 곳에 모은다.
+    def _build_test_sql_prompt(self, job: dict[str, Any], to_sql: str, bind_sql: str, bind_set: str, mapping_schema_text: str, last_error: Any = None) -> str:
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
         if not source_sql:
-            return {"ok": False, "status": "FAIL-TEST", "error": "source SQL is empty"}
-        if not to_sql:
-            return {"ok": False, "status": "FAIL-TEST", "error": "TO_SQL is empty"}
-        if not bind_set:
-            return {"ok": False, "status": "FAIL-TEST", "error": "BIND_SET is empty"}
+            raise ValueError("source SQL is empty")
 
-        prompt = self._render_test_sql_prompt(
+        return self._render_test_sql_prompt(
             from_sql=source_sql,
             to_sql=to_sql,
             bind_sql=bind_sql,
@@ -936,10 +947,8 @@ class SqlConversionCommandTool(Component):
             target_schema=str(self.target_schema or "").strip() or "UNKNOWN",
             last_error=str(last_error or "None"),
         )
-        test_sql = self._sanitize_to_sql(self._call_llm(prompt))
-        return {"ok": True, "status": "TEST_SQL_GENERATED", "test_sql": test_sql}
 
-    # Execute BIND_SQL and return rows as a JSON string like [{column: value}].
+    # BIND_SQL을 실행하고 결과 row를 JSON 문자열로 반환한다.
     def _execute_bind_sql(self, bind_sql: str) -> dict[str, Any]:
         clean_sql = self._prepare_runtime_sql(bind_sql, "EXECUTE_BIND_SQL")
         if not clean_sql:
@@ -953,7 +962,7 @@ class SqlConversionCommandTool(Component):
         bind_set = json.dumps(result_rows, ensure_ascii=False)
         return {"ok": True, "status": "SUCCESS-BIND", "row_count": len(result_rows), "bind_set": bind_set}
 
-    # Execute TEST_SQL and verify FROM_COUNT equals TO_COUNT for every CASE_NO.
+    # TEST_SQL을 실행하고 모든 CASE_NO의 FROM_COUNT와 TO_COUNT가 같은지 확인한다.
     def _execute_test_sql(self, test_sql: str) -> dict[str, Any]:
         clean_sql = self._prepare_runtime_sql(test_sql, "EXECUTE_TEST_SQL")
         if not clean_sql:
@@ -976,7 +985,7 @@ class SqlConversionCommandTool(Component):
                 return {"ok": False, "status": "FAIL-TEST", "message": f"Count mismatch: {row}", "result_rows": result_rows}
         return {"ok": True, "status": "PASS-CONVERSION", "message": "All test counts matched", "result_rows": result_rows}
 
-    # Save generated SQL artifacts to NEXT_SQL_INFO only at final success/failure time.
+    # 최종 성공/실패 시점에 생성된 SQL들을 NEXT_SQL_INFO에 저장한다.
     def _save_final_sql(self, sql_id: str, space_nm: str, to_sql: str, bind_sql: str, bind_set: str, test_sql: str) -> None:
         assignments = []
         params: list[Any] = []
@@ -1003,7 +1012,7 @@ class SqlConversionCommandTool(Component):
             )
             conn.commit()
 
-    # Save final STATUS_CONVERSION/STATUS_TUNING plus retry and batch count to NEXT_SQL_INFO.
+    # 최종 STATUS_CONVERSION/STATUS_TUNING, retry, batch count를 NEXT_SQL_INFO에 저장한다.
     def _update_job_status(self, sql_id: str, space_nm: str, status_conversion: str, elapsed_seconds: int, retry_count: int, status_tuning: str | None = None) -> None:
         assignments = ["STATUS_CONVERSION = :1", "RETRY_COUNT = :2", "BATCH_CNT = NVL(BATCH_CNT, 0) + 1", "LOG = :3", "UPD_TS = CURRENT_TIMESTAMP"]
         params: list[Any] = [status_conversion, retry_count, f"STATUS_CONVERSION={status_conversion}; elapsed={elapsed_seconds}s; retry={retry_count}"]
@@ -1025,7 +1034,7 @@ class SqlConversionCommandTool(Component):
             )
             conn.commit()
 
-    # Append SQL Conversion stage history to NEXT_SQL_LOG.
+    # SQL Conversion 단계별 이력을 NEXT_SQL_LOG에 기록한다.
     def _write_log(self, sql_id: str, space_nm: str, sql_kind: str, status: str, stage_name: str, message: str, retry_count: int = 0, sql_content: str | None = None, elapsed_seconds: int | None = None, prompt_name: str | None = None) -> None:
         table = self._qualify_table("NEXT_SQL_LOG", self.system_schema)
         try:
@@ -1061,7 +1070,7 @@ class SqlConversionCommandTool(Component):
         except Exception:
             pass
 
-    # Prepare runtime SQL by rejecting MyBatis tags and normalizing LIMIT/FETCH clauses.
+    # 실행용 SQL에서 MyBatis 태그를 막고 LIMIT/FETCH 문법을 Oracle 형태로 정리한다.
     def _prepare_runtime_sql(self, sql_text: str, stage: str) -> str:
         clean_sql = self._sanitize_to_sql(sql_text)
         lowered = clean_sql.lower()
@@ -1080,7 +1089,7 @@ class SqlConversionCommandTool(Component):
             clean_sql = f"SELECT * FROM ({inner}) WHERE ROWNUM <= {limit}"
         return clean_sql
 
-    # Read a dict row value using case-insensitive column matching.
+    # dict row에서 컬럼 대소문자 차이를 무시하고 값을 꺼낸다.
     def _get_row_value(self, row: dict[str, Any], key: str) -> Any:
         if key in row:
             return row[key]
@@ -1090,7 +1099,7 @@ class SqlConversionCommandTool(Component):
                 return value
         return None
 
-    # Convert DB values into JSON-serializable values.
+    # DB 값을 JSON으로 변환 가능한 값으로 바꾼다.
     def _json_value(self, value: Any) -> Any:
         if value is None:
             return None
@@ -1102,7 +1111,7 @@ class SqlConversionCommandTool(Component):
             return value
         return str(value)
 
-    # Keep action step summaries small by excluding large SQL bodies.
+    # action step 요약에는 큰 SQL 본문을 제외하고 작은 값만 남긴다.
     def _summary_result(self, result: dict[str, Any]) -> dict[str, Any]:
         summary = {"ok": bool(result.get("ok")), "status": result.get("status")}
         for key in ["message", "error", "row_count", "elapsed_seconds", "retry_count"]:

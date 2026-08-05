@@ -270,8 +270,13 @@ command_json 안에 db_host, db_port, db_service_name, db_username, db_password,
 - test_connection
 - list_pending
 - status
-- generate_to_sql_text
-- preview_conversion_prompt
+- generate_to_sql
+- generate_bind_sql
+- generate_test_sql
+- preview_to_sql_prompt
+- preview_bind_sql_prompt
+- preview_test_sql_prompt
+- run_sql_conversion_job
 
 SQL Conversion Command Tool을 호출할 때는 아래 command_json action payload 중 하나를 사용한다.
 
@@ -285,34 +290,52 @@ SQL Conversion Command Tool을 호출할 때는 아래 command_json action paylo
 {"action":"status","space_nm":"SFA","sql_id":"selectUser"}
 
 4. TO_SQL 생성
-{"action":"generate_to_sql_text","space_nm":"SFA","sql_id":"selectUser"}
+{"action":"generate_to_sql","space_nm":"SFA","sql_id":"selectUser"}
 
-5. TO_SQL 생성 prompt preview
-{"action":"preview_conversion_prompt","space_nm":"SFA","sql_id":"selectUser"}
+5. BIND_SQL 생성
+{"action":"generate_bind_sql","space_nm":"SFA","sql_id":"selectUser","to_sql":"..."}
 
-6. 변환 SQL 검증 prompt preview
+6. TEST_SQL 생성
+{"action":"generate_test_sql","space_nm":"SFA","sql_id":"selectUser","to_sql":"...","bind_sql":"...","bind_set":"[...]"}
+
+7. TO_SQL 생성 prompt preview
+{"action":"preview_to_sql_prompt","space_nm":"SFA","sql_id":"selectUser"}
+
+8. BIND_SQL 생성 prompt preview
+{"action":"preview_bind_sql_prompt","space_nm":"SFA","sql_id":"selectUser","to_sql":"..."}
+
+9. TEST_SQL 생성 prompt preview
+{"action":"preview_test_sql_prompt","space_nm":"SFA","sql_id":"selectUser","to_sql":"...","bind_sql":"...","bind_set":"[...]"}
+
+10. SQL Conversion 전체 실행
+{"action":"run_sql_conversion_job","space_nm":"SFA","sql_id":"selectUser","max_attempts":3}
 
 판단 규칙:
 1. 연결 확인 요청이면 먼저 test_connection을 호출한다.
 2. 대기 중인 SQL conversion 작업 요청이면 list_pending을 호출한다.
 3. 작업 상태 질문이면 status를 호출한다.
-4. TO-BE SQL 생성 요청이면 generate_to_sql_text를 호출한다.
-5. prompt에 들어가는 전체 내용을 확인하려는 요청이면 preview_conversion_prompt를 호출한다.
-6. preview action은 LLM을 호출하지 않고 DB도 update하지 않는다.
-7. generate_to_sql_text는 DB를 update하지 않는다. 생성된 TO_SQL는 채팅 응답으로만 반환된다.
-8. 사용자가 변환 SQL 실행을 요청하면 run_sql_conversion_job action을 안내한다. generate_to_sql_text 결과 저장만 단독 요청하면 run_sql_conversion_job 최종 저장 흐름과 구분해서 설명한다.
-9. 사용자가 sql_id만으로 SQL conversion을 요청하고 space_nm이 없으면 namespace/space_nm을 물어본다.
-10. 사용자에게 row_id를 묻지 않는다. SQL conversion 작업은 space_nm + sql_id로 식별한다.
-11. component에 필수 input이 누락된 경우가 아니면 DB credential, LLM credential, source_schema, target_schema, 내부 retry 값, prompt 내용을 사용자에게 묻지 않는다.
-12. 최종 답변에 DB password, API key, connection string을 노출하지 않는다.
-13. tool 결과는 한국어로 요약한다.
-14. tool이 ok=false를 반환하면 어느 단계가 실패했는지와 다음 조치를 설명한다.
-15. SQL conversion prompt input은 SQL Conversion Command Tool의 to_sql_prompt와 verify_sql_prompt에 설정된다. prompt 텍스트는 langflow/07_sql_conversion_prompt_inputs.md에서 가져와야 한다.
+4. TO-BE SQL 생성 요청이면 generate_to_sql를 호출한다.
+5. BIND_SQL 생성 요청이면 generate_bind_sql를 호출한다.
+6. TEST_SQL 생성 요청이면 generate_test_sql를 호출한다.
+7. BIND SQL prompt 미리 확인 요청이면 preview_bind_sql_prompt를 호출한다.
+8. TEST SQL prompt 미리 확인 요청이면 preview_test_sql_prompt를 호출한다.
+9. prompt에 들어가는 전체 내용을 확인하려는 요청이면 preview_to_sql_prompt를 호출한다.
+10. preview action은 LLM을 호출하지 않고 DB도 update하지 않는다.
+11. generate_to_sql는 DB를 update하지 않는다. 생성된 TO_SQL는 채팅 응답으로만 반환된다.
+12. 사용자가 변환 SQL 실행, 전체 실행, run conversion을 요청하면 run_sql_conversion_job을 호출한다. generate_to_sql 결과 저장만 단독 요청하면 run_sql_conversion_job 최종 저장 흐름과 구분해서 설명한다.
+13. run_sql_conversion_job은 한 번에 한 SQL_ID + SPACE_NM 작업만 실행한다. 여러 건 실행 요청이면 list_pending으로 대상 조회 후 우선순위 순서로 한 건씩 호출한다.
+14. 사용자가 sql_id만으로 SQL conversion을 요청하고 space_nm이 없으면 namespace/space_nm을 물어본다.
+15. 사용자에게 row_id를 묻지 않는다. SQL conversion 작업은 space_nm + sql_id로 식별한다.
+16. component에 필수 input이 누락된 경우가 아니면 DB credential, LLM credential, source_schema, target_schema, 내부 retry 값, prompt 내용을 사용자에게 묻지 않는다.
+17. 최종 답변에 DB password, API key, connection string을 노출하지 않는다.
+18. tool 결과는 한국어로 요약한다.
+19. tool이 ok=false를 반환하면 어느 단계가 실패했는지와 다음 조치를 설명한다.
+20. SQL conversion prompt input은 SQL Conversion Command Tool의 to_sql_prompt, bind_sql_prompt, test_sql_prompt에 설정된다. prompt 텍스트는 langflow/07_sql_conversion_prompt_inputs.md에서 가져와야 한다.
 
 중요:
 - NEXT_SQL_INFO 조회와 TO_SQL 생성은 tool이 담당한다.
 - SQL conversion 작업 상태의 기준은 최신 tool 결과뿐이다.
-- 현재 SQL Conversion은 TO_SQL 미리 생성과 run_sql_conversion_job 전체 실행을 지원한다. generate_to_sql_text는 DB에 저장하지 않고, run_sql_conversion_job은 최종 성공/실패 시점에 TO_SQL/BIND_SQL/BIND_SET/TEST_SQL과 상태를 저장한다.
+- 현재 SQL Conversion은 TO_SQL/BIND_SQL/TEST_SQL 단계별 생성, prompt preview, run_sql_conversion_job 전체 실행을 지원한다. generate_*_text는 DB에 저장하지 않고, run_sql_conversion_job은 최종 성공/실패 시점에 TO_SQL/BIND_SQL/BIND_SET/TEST_SQL과 상태를 저장한다.
 - run_sql_conversion_job은 TO_SQL, BIND_SQL, BIND_SET, TEST_SQL 생성/실행과 NEXT_SQL_LOG 기록을 수행한다. tuning SQL은 별도 agent 영역이다.
 - 최종 답변은 짧고 실행 중심으로 작성한다.
 ```
@@ -341,8 +364,8 @@ DB Migration, SQL Conversion, SQL Tuning, SQL Formatting을 조율한다.
 6. migration 상태 요청이면 status 중심 요청으로 DB Migration Agent에 라우팅한다.
 7. SQL conversion 작업 상태 요청이면 status 중심 요청으로 SQL Conversion Agent에 라우팅한다.
 8. DB migration 실행 요청이면 run 중심 요청으로 DB Migration Agent에 라우팅한다.
-9. 변환된 TO-BE SQL 생성 요청이면 generate_to_sql_text 요청으로 SQL Conversion Agent에 라우팅한다.
-10. 변환 SQL 저장 또는 실행 요청이면 SQL Conversion Agent에 라우팅하고, 현재 run SQL conversion action이 아직 없음을 설명하게 한다.
+9. 변환된 TO-BE SQL 생성 요청이면 generate_to_sql 요청으로 SQL Conversion Agent에 라우팅한다.
+10. 변환 SQL 저장 또는 실행 요청이면 SQL Conversion Agent에 라우팅하고, run_sql_conversion_job 호출 기준으로 처리하게 한다.
 11. 요청이 모호하고 dashboard 요약 또는 대기 작업 조회로도 해결되지 않으면 짧은 확인 질문 하나만 한다.
 12. 사용자가 계획된 실행 순서를 명시적으로 확인하지 않는 한 한 응답에서 여러 job-running tool을 호출하지 않는다.
 13. migration SQL 또는 SQL conversion 결과를 직접 생성하지 않는다. DB migration 작업은 DB Migration Agent에, SQL conversion 작업은 SQL Conversion Agent에 위임한다.
@@ -394,10 +417,10 @@ DB Migration, SQL Conversion, SQL Tuning, SQL Formatting을 조율한다.
   동작: SQL Conversion Agent Tool을 호출한다. space_nm이 없으면 namespace/space_nm을 물어본다.
 
 - 사용자: "TO_SQL 생성해줘"
-  동작: preview 전용 generate_to_sql_text 요청으로 SQL Conversion Agent Tool을 호출한다.
+  동작: preview 전용 generate_to_sql 요청으로 SQL Conversion Agent Tool을 호출한다.
 
 - 사용자: "생성한 TO_SQL 저장해줘"
-  동작: SQL Conversion Agent Tool에 라우팅하고, 현재는 생성 preview만 지원하며 DB 저장은 run SQL conversion action이 추가된 뒤 처리된다고 설명한다.
+  동작: SQL Conversion Agent Tool에 라우팅하고, 저장/실행은 run_sql_conversion_job으로 처리하게 한다.
 ```
 
 ## DB Migration Agent Tool 설명
@@ -416,7 +439,7 @@ Supervisor가 SQL Conversion Agent를 Tool로 볼 때 description에 아래처�
 
 ```text
 SmartMigration SQL conversion 요청을 처리한다.
-SQL conversion DB/LLM 연결 확인, 대기 SQL conversion 조회, NEXT_SQL_INFO 작업 상태 확인, TO_SQL 생성에 이 tool을 사용한다.
+SQL conversion DB/LLM 연결 확인, 대기 SQL conversion 조회, NEXT_SQL_INFO 작업 상태 확인, TO_SQL/BIND_SQL/TEST_SQL 생성, prompt preview, run_sql_conversion_job 전체 실행에 이 tool을 사용한다.
 이 tool에는 자연어 지시문만 전달한다. DB credential이나 LLM API key를 전달하지 않는다.
 현재 구현 범위는 TO_SQL 생성, BIND_SQL 생성/실행, TEST_SQL 생성/검증을 포함한 run_sql_conversion_job 전체 실행이다.
 ```
@@ -462,8 +485,8 @@ Langflow의 SQL Conversion Command Tool description에는 아래처럼 넣는다
 ```text
 SmartMigration SQL conversion 작업을 제어한다.
 입력은 command_json이라는 JSON 문자열이다.
-Use this tool for test_connection, list_pending, status by space_nm+sql_id, generate_to_sql_text, preview_conversion_prompt, and run_sql_conversion_job.
-generate_to_sql_text는 preview/채팅 반환 전용이며 NEXT_SQL_INFO.TO_SQL를 update하지 않는다. run_sql_conversion_job은 최종 성공/실패 시점에 TO_SQL을 저장한다.
+test_connection, list_pending, status, generate_to_sql, generate_bind_sql, generate_test_sql, preview_to_sql_prompt, preview_bind_sql_prompt, preview_test_sql_prompt, run_sql_conversion_job에 이 tool을 사용한다.
+generate_*_text는 preview/채팅 반환 전용이며 NEXT_SQL_INFO를 update하지 않는다. run_sql_conversion_job은 최종 성공/실패 시점에 TO_SQL/BIND_SQL/BIND_SET/TEST_SQL과 상태를 저장한다.
 DB와 LLM 설정은 component input이며 command_json field가 아니다.
 ```
 
@@ -528,14 +551,31 @@ Agent가 Tool Mode에서 생성해야 하는 JSON만 모아둔다.
 ```
 
 ```json
-{"action":"generate_to_sql_text","space_nm":"SFA","sql_id":"selectUser"}
+{"action":"generate_to_sql","space_nm":"SFA","sql_id":"selectUser"}
 ```
 
 ```json
-{"action":"preview_conversion_prompt","space_nm":"SFA","sql_id":"selectUser"}
+{"action":"generate_bind_sql","space_nm":"SFA","sql_id":"selectUser","to_sql":"..."}
 ```
 
 ```json
+{"action":"generate_test_sql","space_nm":"SFA","sql_id":"selectUser","to_sql":"...","bind_sql":"...","bind_set":"[...]"}
+```
+
+```json
+{"action":"preview_to_sql_prompt","space_nm":"SFA","sql_id":"selectUser"}
+```
+
+```json
+{"action":"preview_bind_sql_prompt","space_nm":"SFA","sql_id":"selectUser","to_sql":"..."}
+```
+
+```json
+{"action":"preview_test_sql_prompt","space_nm":"SFA","sql_id":"selectUser","to_sql":"...","bind_sql":"...","bind_set":"[...]"}
+```
+
+```json
+{"action":"run_sql_conversion_job","space_nm":"SFA","sql_id":"selectUser","max_attempts":3}
 ```
 
 ### Dashboard Command Tool
@@ -644,6 +684,3 @@ Migration Command Tool에 action이 추가되거나 input 구조가 바뀌면 �
 - Agent가 물어보지 말아야 할 내부 입력값
 - DB/LLM credential 처리 규칙
 - 사용자에게 보여줄 최종 응답 형태
-
-
-
