@@ -124,7 +124,7 @@ class DashboardCommandTool(Component):
         status_counts = self._status_counts(table, "STATUS_CONVERSION")
         target_count = self._count(
             table,
-            "STATUS_CONVERSION IS NULL OR UPPER(TRIM(STATUS_CONVERSION)) = 'READY'",
+            "STATUS_CONVERSION IS NULL",
         )
         next_jobs = self._query_rows(
             f"""
@@ -133,7 +133,6 @@ class DashboardCommandTool(Component):
                 SELECT TAG_KIND, SPACE_NM, SQL_ID, STATUS_CONVERSION, PRIORITY, BATCH_CNT, UPD_TS
                 FROM {table}
                 WHERE STATUS_CONVERSION IS NULL
-                   OR UPPER(TRIM(STATUS_CONVERSION)) = 'READY'
                 ORDER BY PRIORITY ASC NULLS LAST, UPD_TS NULLS FIRST, SPACE_NM, SQL_ID
             )
             WHERE ROWNUM <= :1
@@ -145,7 +144,7 @@ class DashboardCommandTool(Component):
             "agent": "SQL_CONVERSION",
             "table": table,
             "target_count": target_count,
-            "target_condition": "STATUS_CONVERSION IS NULL OR STATUS_CONVERSION='READY'",
+            "target_condition": "STATUS_CONVERSION IS NULL",
             "status_counts": status_counts,
             "next_jobs": next_jobs,
         }
@@ -155,12 +154,14 @@ class DashboardCommandTool(Component):
         columns = self._available_columns("NEXT_SQL_INFO")
         if "STATUS_TUNING" not in columns:
             return self._unavailable("SQL_TUNING", table, "STATUS_TUNING column not found")
+        if "TO_SQL" not in columns:
+            return self._unavailable("SQL_TUNING", table, "TO_SQL column not found")
 
         status_counts = self._status_counts(table, "STATUS_TUNING")
         target_count = self._count(
             table,
             "UPPER(TRIM(STATUS_TUNING)) IN ('READY', 'URGENT', 'FAIL', 'FAIL-TUNED', 'FAIL-BIND', 'FAIL-TEST') "
-            "AND TO_SQL_TEXT IS NOT NULL "
+            "AND TO_SQL IS NOT NULL "
             "AND UPPER(TRIM(STATUS_CONVERSION)) IN ('PASS-CONVERSION', 'PASS')",
         )
         next_jobs = self._query_rows(
@@ -170,7 +171,7 @@ class DashboardCommandTool(Component):
                 SELECT TAG_KIND, SPACE_NM, SQL_ID, STATUS_CONVERSION, STATUS_TUNING, PRIORITY, BATCH_CNT, UPD_TS
                 FROM {table}
                 WHERE UPPER(TRIM(STATUS_TUNING)) IN ('READY', 'URGENT', 'FAIL', 'FAIL-TUNED', 'FAIL-BIND', 'FAIL-TEST')
-                  AND TO_SQL_TEXT IS NOT NULL
+                  AND TO_SQL IS NOT NULL
                   AND UPPER(TRIM(STATUS_CONVERSION)) IN ('PASS-CONVERSION', 'PASS')
                 ORDER BY PRIORITY ASC NULLS LAST, UPD_TS NULLS FIRST, SPACE_NM, SQL_ID
             )
@@ -183,7 +184,7 @@ class DashboardCommandTool(Component):
             "agent": "SQL_TUNING",
             "table": table,
             "target_count": target_count,
-            "target_condition": "STATUS_TUNING in retryable states, TO_SQL_TEXT exists, conversion passed",
+            "target_condition": "STATUS_TUNING in retryable states, TO_SQL exists, conversion passed",
             "status_counts": status_counts,
             "next_jobs": next_jobs,
         }

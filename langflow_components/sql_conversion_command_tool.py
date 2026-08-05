@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import re
@@ -362,25 +362,25 @@ class SqlConversionCommandTool(Component):
             "rag_rule_count": rag_rule_count,
         }
 
-    # action="run_sql_conversion_job": run the full SQL Conversion flow: TO_SQL, BIND_SQL, TEST_SQL.
+    # action="run_sql_conversion_job": TO_SQL 생성, BIND_SQL 실행, TEST_SQL 검증까지 SQL Conversion 전체 작업을 수행한다.
     def run_sql_conversion_job(self, sql_id: str, space_nm: str, command: dict[str, Any]) -> dict[str, Any]:
 
-        # sql_id and space_nm are required because this job has no single numeric id.
+        #=====_run_sql_conversion_job은 사용자가 채팅으로 호출할 수도 있기 때문에 사용자가 요청한 job이 실행 가능한지 검증한다.=====
         if (sql_id is None or str(sql_id).strip() == "") or (space_nm is None or str(space_nm).strip() == ""):
             return {"ok": False, "error": "sql_id and space_nm are required for run_sql_conversion_job"}
         sql_id = str(sql_id or "").strip()
         space_nm = str(space_nm or "").strip()
 
-        # started is used for elapsed_seconds in response and NEXT_SQL_LOG.
+        # job 실행에 걸린 시간 측정 : 이 코드 기준 - 최종 PASS/FAIL 상태 저장 시 elapsed_seconds 계산
         started = time.perf_counter()
         max_attempts = max(1, int(command.get("max_attempts") or 1))
 
-        # Load the job first and block rows that are already processed.
+        # job을 DB에서 조회하고, STATUS_CONVERSION이 NULL인지는 _load_job에서 확인
         job = self._load_job(space_nm, sql_id)
         if not job:
             return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "job not found"}
 
-        # SQL Conversion runs only when STATUS_CONVERSION is NULL.
+        # SQL Conversion 작업 대상은 STATUS_CONVERSION이 NULL인 row만 허용한다.
         current_status = str(job.get("status_conversion") or "").strip().upper()
         if current_status:
             return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "status": job.get("status_conversion"), "error": "run_sql_conversion_job is allowed only when STATUS_CONVERSION is NULL."}
@@ -393,13 +393,13 @@ class SqlConversionCommandTool(Component):
         last_retry_count = 0
 
         try:
-            # mapping_schema_text is shared by TO_SQL and TEST_SQL prompts.
+            # mapping_schema_text는 TO_SQL/TEST_SQL prompt에 공통으로 들어가는 매핑룰 설명이다.
             mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
             last_failure: dict[str, Any] = {}
             to_sql_executed = False
             bind_sql_executed = False
 
-            # attempt starts at 1, while retry_count and ATTEMPT_NO start at 0.
+            # attempt는 1부터 시작하고, retry_count/ATTEMPT_NO는 로그 기준으로 0부터 시작한다.
             for attempt in range(1, max_attempts + 1):
                 retry_count = attempt - 1
                 last_retry_count = retry_count
@@ -407,7 +407,7 @@ class SqlConversionCommandTool(Component):
                 user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
                 tag_kind = str(job.get("tag_kind") or "").strip().upper()
 
-                # TO_SQL step: use saved TO_SQL for USER_EDITED=Y, otherwise call LLM.
+                # TO_SQL 단계: USER_EDITED=Y이면 DB에 저장된 TO_SQL을 그대로 쓰고, 아니면 LLM으로 생성한다.
                 if not to_sql_executed:
                     if user_edited:
                         to_sql = str(job.get("to_sql") or "").strip()
@@ -430,7 +430,7 @@ class SqlConversionCommandTool(Component):
                     to_sql_executed = True
                     self._write_log(sql_id, space_nm, "TO_SQL", "PASS", "GENERATE_TO_SQL", "TO_SQL generated", retry_count, last_to_sql, int(time.perf_counter() - started), "TO_SQL_PROMPT")
 
-                # Non-SELECT SQL does not need BIND/TEST, so TO_SQL success completes conversion.
+                # SELECT가 아니면 BIND/TEST 없이 TO_SQL 성공만으로 Conversion을 완료한다.
                 if tag_kind != "SELECT":
                     elapsed = int(time.perf_counter() - started)
                     self._save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
@@ -438,7 +438,7 @@ class SqlConversionCommandTool(Component):
                     self._write_log(sql_id, space_nm, "TO_SQL", "PASS", "FINAL", "SQL Conversion completed without BIND/TEST because TAG_KIND is not SELECT", retry_count, last_to_sql, elapsed)
                     return {"ok": True, "space_nm": space_nm, "sql_id": sql_id, "status": "PASS-CONVERSION", "status_tuning": "READY", "elapsed_seconds": elapsed, "retry_count": retry_count, "steps": steps, "to_sql": last_to_sql, "map_ids": map_ids, "fr_tables": fr_tables, "rag_rule_count": rag_rule_count}
 
-                # BIND_SQL step: build a SELECT from FR_SQL and save its result rows as BIND_SET JSON.
+                # BIND_SQL 단계: FR_SQL 기준으로 bind 값을 뽑는 SELECT를 만들고 실행 결과를 BIND_SET JSON으로 보관한다.
                 if not bind_sql_executed:
                     try:
                         bind_result = self._generate_bind_sql(job, last_to_sql, mapping_schema_text, last_failure.get("error", ""))
@@ -464,7 +464,7 @@ class SqlConversionCommandTool(Component):
                             continue
                         break
 
-                # TEST_SQL step: compare FROM_COUNT and TO_COUNT for every CASE_NO.
+                # TEST_SQL 단계: TO_SQL과 BIND_SET을 기준으로 FROM_COUNT/TO_COUNT 비교 SQL을 만들고 실행한다.
                 try:
                     test_result = self._generate_test_sql(job, last_to_sql, last_bind_sql, last_bind_set, mapping_schema_text, last_failure.get("error", ""))
                     steps.append({"step": "generate_test_sql", "attempt": attempt, **self._summary_result(test_result)})
@@ -764,7 +764,7 @@ class SqlConversionCommandTool(Component):
             return ["  - No SQL_CONVERSION RAG rules loaded."]
         return lines or ["  - No SQL_CONVERSION RAG rules found for FR_TABLE hints."]
 
-    # SQL 변환 프롬포트의 placeholder를 실제 값으로 치환한다.
+    # to_sql_prompt의 placeholder를 실제 값으로 치환한다.
     def _render_to_sql_prompt(
         self,
         from_sql: str,
@@ -789,7 +789,7 @@ class SqlConversionCommandTool(Component):
             template = template.replace("{" + key + "}", str(value))
         return template
 
-    # Render the BIND_SQL prompt by replacing placeholders with runtime values.
+    # bind_sql_prompt의 placeholder를 실제 값으로 치환한다.
     def _render_bind_sql_prompt(
         self,
         from_sql: str,
@@ -807,7 +807,7 @@ class SqlConversionCommandTool(Component):
             template = template.replace("{" + key + "}", str(value))
         return template
 
-    # Render the TEST_SQL prompt by replacing placeholders with runtime values.
+    # test_sql_prompt의 placeholder를 실제 값으로 치환한다.
     def _render_test_sql_prompt(
         self,
         from_sql: str,

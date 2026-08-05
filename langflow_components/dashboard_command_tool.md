@@ -1,4 +1,4 @@
-# Dashboard Command Tool 사용법
+﻿# Dashboard Command Tool 사용법
 
 파일: `langflow_components/dashboard_command_tool.py`
 
@@ -58,16 +58,15 @@ SQL conversion:
 
 ```sql
 STATUS_CONVERSION IS NULL
-OR STATUS_CONVERSION = 'READY'
 ```
 
-`TO_SQL_TEXT` 존재 여부는 보지 않는다.
+`TO_SQL` 존재 여부는 보지 않는다. 생성 여부와 무관하게 STATUS_CONVERSION이 NULL이면 작업 대상이다.
 
 SQL tuning:
 
 ```sql
 STATUS_TUNING IN ('READY', 'URGENT', 'FAIL', 'FAIL-TUNED', 'FAIL-BIND', 'FAIL-TEST')
-AND TO_SQL_TEXT IS NOT NULL
+AND TO_SQL IS NOT NULL
 AND STATUS_CONVERSION IN ('PASS-CONVERSION', 'PASS')
 ```
 
