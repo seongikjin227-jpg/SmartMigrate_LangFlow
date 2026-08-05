@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -104,27 +104,35 @@ class SqlConversionCommandTool(Component):
         try:
             command = self._parse_command()
             action = str(command.get("action") or "").strip().lower()
+            space_nm = command.get("space_nm")
+            sql_id = command.get("sql_id")
+            last_error = command.get("last_error")
+            to_sql = command.get("to_sql")
+            bind_sql = command.get("bind_sql")
+            bind_set = command.get("bind_set")
 
+            # command를 직접 action에 연결하는게 좋은지 아니면 파라미터를 정확하게 분리해서 받는게 좋은지 고민중. 
+            # 일단 command JSON을 그대로 받는걸로. db migration에서는 command를 전달 받는 action이 많은데 줄여야 하나,,
             if action == "test_connection":
                 result = self._test_connection()
             elif action == "status":
-                result = self._status(command.get("space_nm"), command.get("sql_id"))
+                result = self._status(space_nm, sql_id)
             elif action == "list_pending":
                 result = self._list_pending(command.get("limit", 20))
             elif action == "generate_to_sql":
-                result = self._generate_to_sql(command.get("space_nm"), command.get("sql_id"), command.get("last_error"))
+                result = self._generate_to_sql(space_nm, sql_id, last_error)
             elif action == "generate_bind_sql":
-                result = self._generate_bind_sql(command.get("space_nm"), command.get("sql_id"), command.get("to_sql"), command.get("last_error"))
+                result = self._generate_bind_sql(space_nm, sql_id, to_sql, last_error)
             elif action == "generate_test_sql":
-                result = self._generate_test_sql(command.get("space_nm"), command.get("sql_id"), command.get("to_sql"), command.get("bind_sql"), command.get("bind_set"), command.get("last_error"))
+                result = self._generate_test_sql(space_nm, sql_id, to_sql, bind_sql, bind_set, last_error)
             elif action == "preview_to_sql_prompt":
-                result = self._preview_to_sql_prompt(command.get("space_nm"), command.get("sql_id"), command.get("last_error"))
+                result = self._preview_to_sql_prompt(space_nm, sql_id, last_error)
             elif action == "preview_bind_sql_prompt":
-                result = self._preview_bind_sql_prompt(command.get("space_nm"), command.get("sql_id"), command.get("to_sql"), command.get("last_error"))
+                result = self._preview_bind_sql_prompt(space_nm, sql_id, to_sql, last_error)
             elif action == "preview_test_sql_prompt":
-                result = self._preview_test_sql_prompt(command.get("space_nm"), command.get("sql_id"), command.get("to_sql"), command.get("bind_sql"), command.get("bind_set"), command.get("last_error"))
+                result = self._preview_test_sql_prompt(space_nm, sql_id, to_sql, bind_sql, bind_set, last_error)
             elif action == "run_sql_conversion_job":
-                result = self.run_sql_conversion_job(command.get("sql_id"), command.get("space_nm"), command)
+                result = self.run_sql_conversion_job(sql_id, space_nm, command)
             else:
                 result = {"ok": False, "error": f"Unsupported action: {action}"}
 
@@ -147,12 +155,10 @@ class SqlConversionCommandTool(Component):
 
         api_key = str(self.llm_api_key or "").strip()
         model = str(self.llm_model or "").strip()
-
         if not api_key:
             llm_result = {"ok": False, "message": "LLM API key is empty"}
         elif not model:
             llm_result = {"ok": False, "message": "LLM model is empty"}
-
         else:
             try:
                 base_url = str(self.llm_base_url or "https://api.openai.com/v1").strip().rstrip("/")
@@ -229,6 +235,7 @@ class SqlConversionCommandTool(Component):
 
     # action="generate_to_sql": TO_SQL을 생성해서 채팅 응답으로 반환한다. DB에는 저장하지 않는다.
     def _generate_to_sql(self, space_nm: Any, sql_id: Any, last_error: Any = None) -> dict[str, Any]:
+        # map id랑 sql id 존재 유무는 다른 함수에서도 활용할거임.
         if not str(space_nm or "").strip() or not str(sql_id or "").strip():
             raise ValueError("space_nm and sql_id are required")
         job = self._load_job(space_nm, sql_id)
@@ -241,20 +248,21 @@ class SqlConversionCommandTool(Component):
             if existing_to_sql:
                 return {
                     "ok": True,
-                    "space_nm": job.get("space_nm"),
-                    "sql_id": job.get("sql_id"),
+                    "space_nm": space_nm,
+                    "sql_id": sql_id,
                     "status": "TO_SQL_SKIPPED_USER_EDITED",
                     "message": "USER_EDITED=Y. Existing TO_SQL was preserved.",
                     "db_updated": False,
                     "to_sql": existing_to_sql,
                 }
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "USER_EDITED=Y but TO_SQL is empty"}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "USER_EDITED=Y but TO_SQL is empty"}
 
+        # edit_fr_sql 이 있으면 source_sql로 씀, 프롬포트에는 source_sql 이 들어감
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
         if not source_sql:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "source SQL is empty"}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "source SQL is empty"}
 
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._render_to_sql_prompt(
@@ -268,8 +276,8 @@ class SqlConversionCommandTool(Component):
 
         return {
             "ok": True,
-            "space_nm": job.get("space_nm"),
-            "sql_id": job.get("sql_id"),
+            "space_nm": space_nm,
+            "sql_id": sql_id,
             "status": "TO_SQL_GENERATED",
             "db_updated": False,
             "fr_tables": fr_tables,
@@ -289,8 +297,8 @@ class SqlConversionCommandTool(Component):
         if user_edited and existing_bind_sql:
             return {
                 "ok": True,
-                "space_nm": job.get("space_nm"),
-                "sql_id": job.get("sql_id"),
+                "space_nm": space_nm,
+                "sql_id": sql_id,
                 "status": "BIND_SQL_SKIPPED_USER_EDITED",
                 "message": "USER_EDITED=Y. Existing BIND_SQL was preserved.",
                 "db_updated": False,
@@ -299,25 +307,25 @@ class SqlConversionCommandTool(Component):
 
         final_to_sql = str(to_sql or job.get("to_sql") or "").strip()
         if not final_to_sql:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before generating BIND_SQL."}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before generating BIND_SQL."}
 
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
         if not source_sql:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "status": "FAIL-BIND", "error": "source SQL is empty"}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": "FAIL-BIND", "error": "source SQL is empty"}
 
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         try:
             prompt = self._build_bind_sql_prompt(job, final_to_sql, mapping_schema_text, last_error)
             bind_sql = self._sanitize_to_sql(self._call_llm(prompt))
         except Exception as exc:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "status": "FAIL-BIND", "error": str(exc), "db_updated": False}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": "FAIL-BIND", "error": str(exc), "db_updated": False}
 
         return {
             "ok": True,
-            "space_nm": job.get("space_nm"),
-            "sql_id": job.get("sql_id"),
+            "space_nm": space_nm,
+            "sql_id": sql_id,
             "status": "SUCCESS-BIND",
             "db_updated": False,
             "fr_tables": fr_tables,
@@ -337,8 +345,8 @@ class SqlConversionCommandTool(Component):
         if user_edited and existing_test_sql:
             return {
                 "ok": True,
-                "space_nm": job.get("space_nm"),
-                "sql_id": job.get("sql_id"),
+                "space_nm": space_nm,
+                "sql_id": sql_id,
                 "status": "TEST_SQL_SKIPPED_USER_EDITED",
                 "message": "USER_EDITED=Y. Existing TEST_SQL was preserved.",
                 "db_updated": False,
@@ -349,27 +357,27 @@ class SqlConversionCommandTool(Component):
         final_bind_sql = str(bind_sql or job.get("bind_sql") or "").strip()
         final_bind_set = str(bind_set or job.get("bind_set") or "").strip()
         if not final_to_sql:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before generating TEST_SQL."}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before generating TEST_SQL."}
         if not final_bind_set:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "BIND_SET is empty. Pass bind_set or run BIND_SQL before generating TEST_SQL."}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "BIND_SET is empty. Pass bind_set or run BIND_SQL before generating TEST_SQL."}
 
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
         if not source_sql:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "status": "FAIL-TEST", "error": "source SQL is empty"}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": "FAIL-TEST", "error": "source SQL is empty"}
 
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         try:
             prompt = self._build_test_sql_prompt(job, final_to_sql, final_bind_sql, final_bind_set, mapping_schema_text, last_error)
             test_sql = self._sanitize_to_sql(self._call_llm(prompt))
         except Exception as exc:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "status": "FAIL-TEST", "error": str(exc), "db_updated": False}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": "FAIL-TEST", "error": str(exc), "db_updated": False}
 
         return {
             "ok": True,
-            "space_nm": job.get("space_nm"),
-            "sql_id": job.get("sql_id"),
+            "space_nm": space_nm,
+            "sql_id": sql_id,
             "status": "TEST_SQL_GENERATED",
             "db_updated": False,
             "fr_tables": fr_tables,
@@ -390,7 +398,7 @@ class SqlConversionCommandTool(Component):
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
         if not source_sql:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "source SQL is empty"}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "source SQL is empty"}
 
 
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
@@ -404,8 +412,8 @@ class SqlConversionCommandTool(Component):
         return {
             "ok": True,
             "action": "preview_to_sql_prompt",
-            "space_nm": job.get("space_nm"),
-            "sql_id": job.get("sql_id"),
+            "space_nm": space_nm,
+            "sql_id": sql_id,
             "prompt_kind": "to_sql",
             "prompt_length": len(prompt),
             "prompt": prompt,
@@ -424,11 +432,11 @@ class SqlConversionCommandTool(Component):
 
         final_to_sql = str(to_sql or job.get("to_sql") or "").strip()
         if not final_to_sql:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before previewing BIND prompt."}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before previewing BIND prompt."}
 
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._build_bind_sql_prompt(job, final_to_sql, mapping_schema_text, last_error)
-        return {"ok": True, "action": "preview_bind_sql_prompt", "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "prompt_kind": "bind", "prompt_length": len(prompt), "prompt": prompt, "db_updated": False, "llm_called": False, "fr_tables": fr_tables, "map_ids": map_ids, "rag_rule_count": rag_rule_count}
+        return {"ok": True, "action": "preview_bind_sql_prompt", "space_nm": space_nm, "sql_id": sql_id, "prompt_kind": "bind", "prompt_length": len(prompt), "prompt": prompt, "db_updated": False, "llm_called": False, "fr_tables": fr_tables, "map_ids": map_ids, "rag_rule_count": rag_rule_count}
 
     # action="preview_test_sql_prompt": LLM 호출 없이 TEST SQL prompt를 미리 확인한다.
     def _preview_test_sql_prompt(self, space_nm: Any, sql_id: Any, to_sql: Any = None, bind_sql: Any = None, bind_set: Any = None, last_error: Any = None) -> dict[str, Any]:
@@ -440,13 +448,13 @@ class SqlConversionCommandTool(Component):
         final_bind_sql = str(bind_sql or job.get("bind_sql") or "").strip()
         final_bind_set = str(bind_set or job.get("bind_set") or "").strip()
         if not final_to_sql:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before previewing TEST prompt."}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before previewing TEST prompt."}
         if not final_bind_set:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "BIND_SET is empty. Pass bind_set or run BIND_SQL before previewing TEST prompt."}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "BIND_SET is empty. Pass bind_set or run BIND_SQL before previewing TEST prompt."}
 
         mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._build_mapping_schema_text(job)
         prompt = self._build_test_sql_prompt(job, final_to_sql, final_bind_sql, final_bind_set, mapping_schema_text, last_error)
-        return {"ok": True, "action": "preview_test_sql_prompt", "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "prompt_kind": "test", "prompt_length": len(prompt), "prompt": prompt, "db_updated": False, "llm_called": False, "fr_tables": fr_tables, "map_ids": map_ids, "rag_rule_count": rag_rule_count}
+        return {"ok": True, "action": "preview_test_sql_prompt", "space_nm": space_nm, "sql_id": sql_id, "prompt_kind": "test", "prompt_length": len(prompt), "prompt": prompt, "db_updated": False, "llm_called": False, "fr_tables": fr_tables, "map_ids": map_ids, "rag_rule_count": rag_rule_count}
 
 
     # action="run_sql_conversion_job": TO_SQL 생성, BIND_SQL 실행, TEST_SQL 검증까지 SQL Conversion 전체 작업을 수행한다.
@@ -470,7 +478,7 @@ class SqlConversionCommandTool(Component):
         # SQL Conversion 작업 대상은 STATUS_CONVERSION이 NULL인 row만 허용한다.
         current_status = str(job.get("status_conversion") or "").strip().upper()
         if current_status:
-            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "status": job.get("status_conversion"), "error": "run_sql_conversion_job is allowed only when STATUS_CONVERSION is NULL."}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": current_status, "error": "run_sql_conversion_job is allowed only when STATUS_CONVERSION is NULL."}
 
         steps: list[dict[str, Any]] = []
         last_to_sql = str(job.get("to_sql") or "")
@@ -639,6 +647,7 @@ class SqlConversionCommandTool(Component):
         return f"oracle+oracledb://{quote_plus(username)}:{quote_plus(password)}@{host}:{port}/{service_name}"
 
     # 같은 DB 접속 정보는 _db_cache에서 재사용한다.
+    # 랭플로우에서 SQLDatabase.from_uri 를 사용하기 위해 따로 공통함수로 뺌.
     def _get_db(self):
         from langchain_community.utilities import SQLDatabase
 
@@ -811,7 +820,8 @@ class SqlConversionCommandTool(Component):
                 sections.append(
                     f"  - map_id={map_id}; map_type={map_type}; from={fr_table}.{fr_col or '*'}; to={to_table}.{to_col or '*'}; condition={condition}"
                 )
-
+        # NEXT_MIG_RAG_INFO에서 CATEGORY=SQL_CONVERSION이고 SOURCE_TABLES가 FR_TABLE과 같은 rule을 최대 3개씩 가져와서 guidance를 보여준다.
+        # 원래는 임베딩 기반 RAG로 쓰려고 했는데 우선 FR_TABLE 기준으로 간단하게 RAG를 보여주는 것으로 구현한다.
         sections.append("\n[SQL_CONVERSION_RAG_GUIDANCE]")
         rag_lines = self._load_conversion_rag_rules(fr_tables)
         sections.extend(rag_lines)

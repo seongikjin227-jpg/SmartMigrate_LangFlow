@@ -332,6 +332,7 @@ class MigrationCommandTool(Component):
         job = self._load_job(map_id)
         if not job:
             return {"ok": False, "map_id": map_id, "error": "job not found"}
+        
         user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
         existing_mig_sql = str(job.get("mig_sql") or "").strip()
         if user_edited:
