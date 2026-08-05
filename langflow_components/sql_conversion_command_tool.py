@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -669,7 +669,6 @@ class SqlConversionCommandTool(Component):
                 SELECT M.MAP_ID, M.MAP_TYPE, M.FR_TABLE, D.FR_COL, M.TO_TABLE, D.TO_COL, M.CONDITION
                 FROM {table} M
                 LEFT JOIN {detail} D ON M.MAP_ID = D.MAP_ID
-                WHERE UPPER(TRIM(NVL(M.USE_YN, 'N'))) = 'Y'
                 ORDER BY M.PRIORITY ASC, M.MAP_ID ASC, D.MAP_DTL ASC
                 """
             )
