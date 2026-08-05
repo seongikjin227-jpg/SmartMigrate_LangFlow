@@ -555,9 +555,18 @@ class SqlConversionCommandTool(Component):
                             bind_sql_executed = True
                             steps.append({"step": "execute_bind_sql", "attempt": attempt, "ok": True, "status": "BIND_SET_SKIPPED_USER_EDITED", "message": "USER_EDITED=Y. Existing BIND_SET was used."})
                         else:
-                            bind_exec_result = self._execute_bind_sql(last_bind_sql)
+                            clean_bind_sql = self._prepare_runtime_sql(last_bind_sql, "EXECUTE_BIND_SQL")
+                            if not clean_bind_sql:
+                                raise ValueError("BIND_SQL is empty")
+                            with self._connect() as conn:
+                                cur = conn.cursor()
+                                cur.execute(clean_bind_sql)
+                                columns = [desc[0] for desc in cur.description] if cur.description else []
+                                rows = cur.fetchmany(20)
+                            result_rows = [{str(columns[i] if i < len(columns) else i): self._json_value(value) for i, value in enumerate(row)} for row in rows]
+                            last_bind_set = json.dumps(result_rows, ensure_ascii=False)
+                            bind_exec_result = {"ok": True, "status": "SUCCESS-BIND", "row_count": len(result_rows), "bind_set": last_bind_set}
                             steps.append({"step": "execute_bind_sql", "attempt": attempt, **self._summary_result(bind_exec_result)})
-                            last_bind_set = str(bind_exec_result.get("bind_set") or "")
                             bind_sql_executed = True
                             self._write_log(sql_id, space_nm, "BIND_SET", "PASS", "EXECUTE_BIND_SQL", "BIND_SQL executed", retry_count, last_bind_set, int(time.perf_counter() - started))
                     except Exception as exc:
@@ -580,7 +589,29 @@ class SqlConversionCommandTool(Component):
                         break
                     last_test_sql = str(test_result.get("test_sql") or "").strip()
                     self._write_log(sql_id, space_nm, "TEST_SQL", "PASS", "GENERATE_TEST_SQL", "TEST_SQL generated", retry_count, last_test_sql, int(time.perf_counter() - started), "TEST_SQL_PROMPT")
-                    test_exec_result = self._execute_test_sql(last_test_sql)
+                    clean_test_sql = self._prepare_runtime_sql(last_test_sql, "EXECUTE_TEST_SQL")
+                    if not clean_test_sql:
+                        raise ValueError("TEST_SQL is empty")
+                    with self._connect() as conn:
+                        cur = conn.cursor()
+                        cur.execute(clean_test_sql)
+                        columns = [desc[0] for desc in cur.description] if cur.description else []
+                        rows = cur.fetchall()
+                    result_rows = [{str(columns[i] if i < len(columns) else i): self._json_value(value) for i, value in enumerate(row)} for row in rows]
+                    if not result_rows:
+                        test_exec_result = {"ok": False, "status": "FAIL-TEST", "message": "TEST_SQL returned no rows", "result_rows": result_rows}
+                    else:
+                        sample_keys = {str(key).lower() for key in result_rows[0].keys()}
+                        if not {"case_no", "from_count", "to_count"}.issubset(sample_keys):
+                            test_exec_result = {"ok": False, "status": "FAIL-TEST", "message": f"TEST_SQL must return CASE_NO, FROM_COUNT, TO_COUNT. Actual columns: {sorted(sample_keys)}", "result_rows": result_rows}
+                        else:
+                            test_exec_result = {"ok": True, "status": "PASS-CONVERSION", "message": "All test counts matched", "result_rows": result_rows}
+                            for row in result_rows:
+                                from_count = self._get_row_value(row, "FROM_COUNT")
+                                to_count = self._get_row_value(row, "TO_COUNT")
+                                if str(from_count).strip() != str(to_count).strip():
+                                    test_exec_result = {"ok": False, "status": "FAIL-TEST", "message": f"Count mismatch: {row}", "result_rows": result_rows}
+                                    break
                     steps.append({"step": "execute_test_sql", "attempt": attempt, **self._summary_result(test_exec_result)})
                     if test_exec_result.get("ok"):
                         elapsed = int(time.perf_counter() - started)
@@ -1006,43 +1037,6 @@ class SqlConversionCommandTool(Component):
             target_schema=str(self.target_schema or "").strip() or "UNKNOWN",
             last_error=str(last_error or "None"),
         )
-
-    # BIND_SQL을 실행하고 결과 row를 JSON 문자열로 반환한다.
-    def _execute_bind_sql(self, bind_sql: str) -> dict[str, Any]:
-        clean_sql = self._prepare_runtime_sql(bind_sql, "EXECUTE_BIND_SQL")
-        if not clean_sql:
-            raise ValueError("BIND_SQL is empty")
-        with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute(clean_sql)
-            columns = [desc[0] for desc in cur.description] if cur.description else []
-            rows = cur.fetchmany(20)
-        result_rows = [{str(columns[i] if i < len(columns) else i): self._json_value(value) for i, value in enumerate(row)} for row in rows]
-        bind_set = json.dumps(result_rows, ensure_ascii=False)
-        return {"ok": True, "status": "SUCCESS-BIND", "row_count": len(result_rows), "bind_set": bind_set}
-
-    # TEST_SQL을 실행하고 모든 CASE_NO의 FROM_COUNT와 TO_COUNT가 같은지 확인한다.
-    def _execute_test_sql(self, test_sql: str) -> dict[str, Any]:
-        clean_sql = self._prepare_runtime_sql(test_sql, "EXECUTE_TEST_SQL")
-        if not clean_sql:
-            raise ValueError("TEST_SQL is empty")
-        with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute(clean_sql)
-            columns = [desc[0] for desc in cur.description] if cur.description else []
-            rows = cur.fetchall()
-        result_rows = [{str(columns[i] if i < len(columns) else i): self._json_value(value) for i, value in enumerate(row)} for row in rows]
-        if not result_rows:
-            return {"ok": False, "status": "FAIL-TEST", "message": "TEST_SQL returned no rows", "result_rows": result_rows}
-        sample_keys = {str(key).lower() for key in result_rows[0].keys()}
-        if not {"case_no", "from_count", "to_count"}.issubset(sample_keys):
-            return {"ok": False, "status": "FAIL-TEST", "message": f"TEST_SQL must return CASE_NO, FROM_COUNT, TO_COUNT. Actual columns: {sorted(sample_keys)}", "result_rows": result_rows}
-        for row in result_rows:
-            from_count = self._get_row_value(row, "FROM_COUNT")
-            to_count = self._get_row_value(row, "TO_COUNT")
-            if str(from_count).strip() != str(to_count).strip():
-                return {"ok": False, "status": "FAIL-TEST", "message": f"Count mismatch: {row}", "result_rows": result_rows}
-        return {"ok": True, "status": "PASS-CONVERSION", "message": "All test counts matched", "result_rows": result_rows}
 
     # 최종 성공/실패 시점에 생성된 SQL들을 NEXT_SQL_INFO에 저장한다.
     def _save_final_sql(self, sql_id: str, space_nm: str, to_sql: str, bind_sql: str, bind_set: str, test_sql: str) -> None:
