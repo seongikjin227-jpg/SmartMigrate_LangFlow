@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import ast
 import json
@@ -332,10 +332,9 @@ class MigrationCommandTool(Component):
         job = self._load_job(map_id)
         if not job:
             return {"ok": False, "map_id": map_id, "error": "job not found"}
-        force_regenerate = self._as_bool(command.get("force_regenerate", False))
         user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
         existing_mig_sql = str(job.get("mig_sql") or "").strip()
-        if user_edited and not force_regenerate:
+        if user_edited:
             if existing_mig_sql:
                 return {
                     "ok": True,
@@ -390,11 +389,10 @@ class MigrationCommandTool(Component):
         if not job:
             return {"ok": False, "map_id": map_id, "error": "job not found"}
 
-        force_regenerate = self._as_bool(command.get("force_regenerate", False))
         user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
         existing_mig_sql = str(job.get("mig_sql") or "").strip()
         existing_verify_sql = str(job.get("verify_sql") or "").strip()
-        if user_edited and not force_regenerate:
+        if user_edited:
             if not existing_mig_sql:
                 return {"ok": False, "map_id": map_id, "error": "USER_EDITED=Y but MIG_SQL is empty"}
             if existing_verify_sql:
@@ -677,11 +675,6 @@ class MigrationCommandTool(Component):
             job = self._load_job(map_id) or job
             user_edited = str(job.get("user_edited") or "").upper() == "Y"
 
-            # force_regenerate 옵션은 MIG_SQL/VERIFY_SQL을 LLM으로 재생성할지 여부를 결정한다.
-            generation_command = {
-                "force_regenerate": command.get("force_regenerate", False),
-            }
-
             # last_failure는 다음 retry prompt에 넣을 에러와 실패 status를 보관한다.
             last_failure: dict[str, Any] = {}
             # mig_executed는 한 번 MIG_SQL 실행에 성공하면 같은 run 안에서 다시 insert하지 않도록 한다.
@@ -708,7 +701,6 @@ class MigrationCommandTool(Component):
                     else:
                         # MIG_SQL 생성 함수에는 이전 실패 에러와 SQL을 넘겨 retry prompt에 반영한다.
                         mig_command = {
-                            **generation_command,
                             "retry_count": retry_count,
                             "last_error": last_failure.get("error", ""),
                             "last_sql": last_mig_sql,
@@ -763,7 +755,6 @@ class MigrationCommandTool(Component):
                 else:
                     # VERIFY_SQL 생성도 이전 실패 정보를 같이 넘겨 retry prompt 품질을 높인다.
                     verify_command = {
-                        **generation_command,
                         "retry_count": retry_count,
                         "last_error": last_failure.get("error", ""),
                         "last_sql": last_verify_sql,

@@ -22,10 +22,10 @@ TO_SQL_PROMPT 에 파라미터도 분리해야 하면 분리하도록,, 가이�
 [RUN CONVERSION JOB 구현 메모]
 1) run_sql_conversion_job은 SQL_ID + SPACE_NM으로 job을 조회한다.
 2) STATUS_CONVERSION이 NULL인 row만 실행한다. READY는 작업 대상으로 보지 않는다.
-3) TO_SQL은 USER_EDITED=Y이면 DB의 TO_SQL을 그대로 사용하고, 아니면 TO_SQL_PROMPT로 생성한다.
+3) USER_EDITED=Y이면 이미 저장된 TO_SQL/BIND_SQL/TEST_SQL은 그대로 사용한다. 단, 다음 단계 값이 비어 있으면 그 단계부터 생성한다.
 4) TAG_KIND가 SELECT가 아니면 TO_SQL 확정 후 바로 PASS-CONVERSION, STATUS_TUNING=READY로 저장한다.
-5) TAG_KIND가 SELECT이면 TO_SQL 이후 BIND_SQL_PROMPT로 BIND_SQL을 만들고 실행 결과를 BIND_SET JSON으로 저장 후보에 둔다.
-6) TEST_SQL_PROMPT는 FR_SQL 또는 EDIT_FR_SQL, TO_SQL, 매핑룰, BIND_SET을 받아 TEST_SQL을 생성한다.
+5) TAG_KIND가 SELECT이면 TO_SQL 이후 BIND_SQL/BIND_SET이 없을 때 BIND_SQL_PROMPT로 BIND_SQL을 만들고 실행 결과를 BIND_SET JSON으로 저장 후보에 둔다.
+6) TEST_SQL이 없으면 TEST_SQL_PROMPT가 FR_SQL 또는 EDIT_FR_SQL, TO_SQL, 매핑룰, BIND_SET을 받아 TEST_SQL을 생성한다.
 7) TEST_SQL 실행 결과는 CASE_NO, FROM_COUNT, TO_COUNT 컬럼을 기준으로 검증하고, 모든 row의 FROM_COUNT와 TO_COUNT가 같으면 PASS-CONVERSION이다.
 8) 최종 성공/실패 시점에만 NEXT_SQL_INFO의 TO_SQL, BIND_SQL, BIND_SET, TEST_SQL, STATUS_CONVERSION, STATUS_TUNING, RETRY_COUNT, BATCH_CNT를 저장한다.
 9) elapsed_seconds는 NEXT_SQL_INFO에 저장하지 않고 NEXT_SQL_LOG.ELAPSED_SECONDS에 기록한다.

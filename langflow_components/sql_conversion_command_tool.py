@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import re
@@ -190,10 +190,8 @@ class SqlConversionCommandTool(Component):
     def _list_pending(self, limit: Any) -> dict[str, Any]:
         safe_limit = max(1, min(int(limit or 20), 100))
         table = self._qualify_table("NEXT_SQL_INFO", self.system_schema)
-        with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                f"""
+        # fr_sql 같은 CLOB 컬럼은 DBMS_LOB.SUBSTR로 미리 잘라서 가져오거나 length만 가져옴
+        sql = f"""
                 SELECT *
                 FROM (
                     SELECT TAG_KIND, SPACE_NM, SQL_ID, STATUS_CONVERSION,
@@ -205,11 +203,12 @@ class SqlConversionCommandTool(Component):
                     WHERE STATUS_CONVERSION IS NULL
                     ORDER BY PRIORITY ASC NULLS LAST, UPD_TS NULLS FIRST, SPACE_NM, SQL_ID
                 )
-                WHERE ROWNUM <= :1
-                """,
-                [safe_limit],
-            )
-            rows = cur.fetchall()
+                WHERE ROWNUM <= {safe_limit}
+                """
+        with self._connect() as conn:
+                    cur = conn.cursor()
+                    cur.execute(sql)
+                    rows = cur.fetchall()
         jobs = [
             {
                 "tag_kind": self._to_text(r[0]),
@@ -226,12 +225,30 @@ class SqlConversionCommandTool(Component):
         ]
         return {"ok": True, "count": len(jobs), "jobs": jobs}
 
+    # action="get_table_ddl" 을 프롬포트에 넣을지 고민중,, 필요하면 migration_tool에서 가져와서 render_*_prompt에 넣어주면 될듯
 
     # action="generate_to_sql": TO_SQL을 생성해서 채팅 응답으로 반환한다. DB에는 저장하지 않는다.
     def _generate_to_sql(self, space_nm: Any, sql_id: Any, last_error: Any = None) -> dict[str, Any]:
+        if not str(space_nm or "").strip() or not str(sql_id or "").strip():
+            raise ValueError("space_nm and sql_id are required")
         job = self._load_job(space_nm, sql_id)
         if not job:
             return {"ok": False, "error": "job not found"}
+
+        user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
+        existing_to_sql = str(job.get("to_sql") or "").strip()
+        if user_edited:
+            if existing_to_sql:
+                return {
+                    "ok": True,
+                    "space_nm": job.get("space_nm"),
+                    "sql_id": job.get("sql_id"),
+                    "status": "TO_SQL_SKIPPED_USER_EDITED",
+                    "message": "USER_EDITED=Y. Existing TO_SQL was preserved.",
+                    "db_updated": False,
+                    "to_sql": existing_to_sql,
+                }
+            return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "USER_EDITED=Y but TO_SQL is empty"}
 
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
@@ -267,6 +284,19 @@ class SqlConversionCommandTool(Component):
         if not job:
             return {"ok": False, "error": "job not found"}
 
+        user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
+        existing_bind_sql = str(job.get("bind_sql") or "").strip()
+        if user_edited and existing_bind_sql:
+            return {
+                "ok": True,
+                "space_nm": job.get("space_nm"),
+                "sql_id": job.get("sql_id"),
+                "status": "BIND_SQL_SKIPPED_USER_EDITED",
+                "message": "USER_EDITED=Y. Existing BIND_SQL was preserved.",
+                "db_updated": False,
+                "bind_sql": existing_bind_sql,
+            }
+
         final_to_sql = str(to_sql or job.get("to_sql") or "").strip()
         if not final_to_sql:
             return {"ok": False, "space_nm": job.get("space_nm"), "sql_id": job.get("sql_id"), "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before generating BIND_SQL."}
@@ -301,6 +331,19 @@ class SqlConversionCommandTool(Component):
         job = self._load_job(space_nm, sql_id)
         if not job:
             return {"ok": False, "error": "job not found"}
+
+        user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
+        existing_test_sql = str(job.get("test_sql") or "").strip()
+        if user_edited and existing_test_sql:
+            return {
+                "ok": True,
+                "space_nm": job.get("space_nm"),
+                "sql_id": job.get("sql_id"),
+                "status": "TEST_SQL_SKIPPED_USER_EDITED",
+                "message": "USER_EDITED=Y. Existing TEST_SQL was preserved.",
+                "db_updated": False,
+                "test_sql": existing_test_sql,
+            }
 
         final_to_sql = str(to_sql or job.get("to_sql") or "").strip()
         final_bind_sql = str(bind_sql or job.get("bind_sql") or "").strip()
@@ -498,11 +541,17 @@ class SqlConversionCommandTool(Component):
                             break
                         last_bind_sql = str(bind_result.get("bind_sql") or "").strip()
                         self._write_log(sql_id, space_nm, "BIND_SQL", "PASS", "GENERATE_BIND_SQL", "BIND_SQL generated", retry_count, last_bind_sql, int(time.perf_counter() - started), "BIND_SQL_PROMPT")
-                        bind_exec_result = self._execute_bind_sql(last_bind_sql)
-                        steps.append({"step": "execute_bind_sql", "attempt": attempt, **self._summary_result(bind_exec_result)})
-                        last_bind_set = str(bind_exec_result.get("bind_set") or "")
-                        bind_sql_executed = True
-                        self._write_log(sql_id, space_nm, "BIND_SET", "PASS", "EXECUTE_BIND_SQL", "BIND_SQL executed", retry_count, last_bind_set, int(time.perf_counter() - started))
+                        existing_bind_set = str(job.get("bind_set") or "").strip()
+                        if bind_result.get("status") == "BIND_SQL_SKIPPED_USER_EDITED" and existing_bind_set:
+                            last_bind_set = existing_bind_set
+                            bind_sql_executed = True
+                            steps.append({"step": "execute_bind_sql", "attempt": attempt, "ok": True, "status": "BIND_SET_SKIPPED_USER_EDITED", "message": "USER_EDITED=Y. Existing BIND_SET was used."})
+                        else:
+                            bind_exec_result = self._execute_bind_sql(last_bind_sql)
+                            steps.append({"step": "execute_bind_sql", "attempt": attempt, **self._summary_result(bind_exec_result)})
+                            last_bind_set = str(bind_exec_result.get("bind_set") or "")
+                            bind_sql_executed = True
+                            self._write_log(sql_id, space_nm, "BIND_SET", "PASS", "EXECUTE_BIND_SQL", "BIND_SQL executed", retry_count, last_bind_set, int(time.perf_counter() - started))
                     except Exception as exc:
                         last_failure = {"status": "FAIL-BIND", "error": str(exc)}
                         steps.append({"step": "execute_bind_sql", "attempt": attempt, "ok": False, **last_failure})
