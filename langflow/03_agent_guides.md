@@ -175,6 +175,10 @@ Batch Agent Command Tool을 호출할 때는 아래 command_json payload 중 하
 - Batch Agent는 사용자의 자연어 요청을 start/stop/status 중 하나로 변환하는 역할만 한다.
 - Batch Agent Command Tool이 반환값을 주면 Langflow chat request는 끝나지만, start로 생성된 백그라운드 thread는 계속 실행된다.
 - `background_thread_daemon=false`가 기본값이며, non-daemon thread로 실행해 Langflow runtime이 정상 종료 과정에서 thread를 쉽게 정리하지 않도록 한다.
+- status 결과의 `status_source=batch_log`는 현재 tool 호출 메모리에서는 thread handle이 보이지 않지만 NEXT_BATCH_LOG 기준으로 실행 중임을 뜻한다.
+- 이 경우 "실행 중이 아니라고 단정하지 말고, 로그 기준으로 실행 중으로 보입니다"라고 답한다.
+- stop은 status가 memory 기준으로 running인지 확인한 뒤 조건부로 호출하지 않는다. 사용자가 종료를 요청하면 Batch Agent Command Tool의 stop을 호출한다.
+- stop은 `NEXT_BATCH_LOG`에 `STOP_REQUESTED`를 기록하고, background worker는 해당 로그를 확인해 while loop를 종료한다.
 - Langflow 컨테이너가 재시작되면 백그라운드 thread도 종료되므로 다시 start가 필요하다.
 - 현재 구조는 Langflow 컨테이너 1개 고정을 전제로 한다. replica가 여러 개이면 중복 실행 방지를 위한 DB lock 설계가 추가로 필요하다.
 ```
@@ -586,6 +590,7 @@ SmartMigration 백그라운드 배치 loop를 제어한다.
 start, stop, status에만 사용한다.
 start는 background thread를 시작하고 즉시 반환한다. 이미 실행 중이면 중복 시작하지 않고 already_running 상태를 반환한다.
 background_thread_daemon=false가 기본값이며, non-daemon thread로 시작한다.
+status는 메모리 thread handle과 NEXT_BATCH_LOG 최신 event를 함께 확인한다.
 background loop는 DB_MIGRATION, SQL_CONVERSION 순서로 pending job을 찾고 한 cycle에 최대 1건만 처리한다.
 job 처리 결과와 NO_JOB, LOOP_ERROR, STOPPED 이벤트는 NEXT_BATCH_LOG에 저장한다.
 DB, LLM, prompt 설정은 component input이며 command_json field가 아니다.

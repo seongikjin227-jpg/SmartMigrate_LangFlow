@@ -17,15 +17,16 @@ DB Migration과 SQL Conversion 업무 로직은 같은 class 안의 내부 함�
 동작:
 1. 이미 실행 중인 thread가 있는지 확인한다.
 2. 실행 중이면 새 thread를 만들지 않고 `already_running`을 반환한다.
-3. 실행 중이 아니면 `NEXT_BATCH_LOG` 테이블을 생성 시도한다. `auto_create_log_table=true`일 때만 수행한다.
-4. background thread를 시작한다.
-5. tool은 즉시 return한다.
-6. loop 상태와 job 결과는 `NEXT_BATCH_LOG`에 계속 저장된다.
+3. background thread를 시작한다.
+4. tool은 즉시 return한다.
+5. loop 상태와 job 결과는 `NEXT_BATCH_LOG`에 계속 저장된다.
 
 보강:
 - `background_thread_daemon=false`가 기본값이다.
 - non-daemon thread는 정상적인 Python process 종료 시 thread를 기다리므로 daemon thread보다 쉽게 정리되지 않는다.
 - 다만 LangFlow runtime이 worker process를 강제 종료하거나 재시작하면 thread는 유지되지 않는다.
+- `status`는 메모리의 thread handle만 보지 않고 `NEXT_BATCH_LOG`의 최신 event도 함께 확인한다.
+- 최신 로그가 `STOPPED`, `STOP_REQUESTED`가 아니고 `status_log_alive_grace_seconds` 안에 있으면 실행 중으로 추론한다.
 
 ## 지원 Action
 
@@ -40,12 +41,19 @@ background thread 방식으로 배치 loop를 시작하고 즉시 반환한다.
 ```
 
 stop event를 set한다.
+현재 status 호출에서 thread handle이 보이지 않아도, 최신 active `RUN_ID`에 `STOP_REQUESTED` 로그를 저장한다.
+worker loop는 자기 `RUN_ID`의 최신 로그가 `STOP_REQUESTED`인지 확인하고 while loop를 빠져나온다.
 
 ```json
 {"action":"status"}
 ```
 
 현재 실행 상태, run_id, loop_no, 마지막 event/job/error를 반환한다.
+
+상태 판단 기준:
+- `status_source=memory`: 현재 status 호출에서 thread handle이 보인다.
+- `status_source=batch_log`: 현재 status 호출에서는 thread handle이 안 보이지만 `NEXT_BATCH_LOG` 기준으로 최근 loop가 살아있다고 추론했다.
+- `status_source=none`: 메모리와 로그 기준 모두 실행 중으로 볼 근거가 없다.
 
 ## Plain Text 입력 매핑
 
@@ -151,6 +159,12 @@ LOOP_ERROR
 STOP_REQUESTED
 STOPPED
 ```
+
+종료 방식:
+1. stop action이 메모리의 stop event를 set한다.
+2. stop action이 `NEXT_BATCH_LOG`에 `STOP_REQUESTED`를 저장한다.
+3. background worker는 cycle 시작 전과 sleep 중에 자기 `RUN_ID`의 최신 event를 확인한다.
+4. 최신 event가 `STOP_REQUESTED`이면 while loop를 빠져나오고 `STOPPED`를 저장한다.
 
 최근 로그:
 

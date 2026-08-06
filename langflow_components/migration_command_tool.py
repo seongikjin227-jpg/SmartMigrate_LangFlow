@@ -977,14 +977,24 @@ class MigrationCommandTool(Component):
         body = json.dumps(payload).encode("utf-8")
         req_headers = {"Content-Type": "application/json", **headers}
         request = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
-        try:
-            timeout_seconds = max(1, int(self.llm_timeout_seconds or 900))
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                raw = response.read().decode("utf-8", errors="ignore")
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")[:1000]
-            raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+        timeout_seconds = max(1, int(self.llm_timeout_seconds or 900))
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                    raw = response.read().decode("utf-8", errors="ignore")
+                    return json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="ignore")[:1000]
+                last_error = RuntimeError(f"HTTP {exc.code}: {detail}")
+                if exc.code not in {429, 502, 503, 504} or attempt >= 3:
+                    raise last_error from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                last_error = RuntimeError(f"LLM request failed: {exc}")
+                if attempt >= 3:
+                    raise last_error from exc
+            time.sleep(min(8, 2 ** (attempt - 1)))
+        raise last_error or RuntimeError("LLM request failed")
 
     # SQLDatabase.run 결과를 Langflow 응답에서 보기 좋은 list[dict] 형태로 맞춘다.
     def _normalize_query_rows(self, raw: Any) -> list[dict[str, Any]]:

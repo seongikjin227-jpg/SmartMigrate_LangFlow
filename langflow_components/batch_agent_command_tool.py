@@ -81,7 +81,7 @@ class BatchAgentCommandTool(Component):
         StrInput(name="source_schema", display_name="Source Schema", required=False),
         StrInput(name="target_schema", display_name="Target Schema", required=False),
         IntInput(name="migration_max_attempts", display_name="Migration Max Attempts", value=3, required=False),
-        IntInput(name="sql_conversion_max_attempts", display_name="SQL Conversion Max Attempts", value=1, required=False),
+        IntInput(name="sql_conversion_max_attempts", display_name="SQL Conversion Max Attempts", value=3, required=False),
         IntInput(
             name="no_job_sleep_seconds",
             display_name="No Job Sleep Seconds",
@@ -96,19 +96,19 @@ class BatchAgentCommandTool(Component):
             required=False,
             info="Sleep interval after an unexpected loop error. Default: 60 seconds.",
         ),
+        IntInput(
+            name="status_log_alive_grace_seconds",
+            display_name="Status Log Alive Grace Seconds",
+            value=1800,
+            required=False,
+            info="Status treats the latest NEXT_BATCH_LOG event as alive if it is newer than this many seconds and is not STOPPED/STOP_REQUESTED.",
+        ),
         BoolInput(
             name="auto_install_packages",
             display_name="Auto Install Missing Packages",
             value=False,
             required=False,
             info="If true, installs missing runtime packages with pip before DB connection.",
-        ),
-        BoolInput(
-            name="auto_create_log_table",
-            display_name="Auto Create Batch Log Table",
-            value=True,
-            required=False,
-            info="Create NEXT_BATCH_LOG if it does not exist.",
         ),
         BoolInput(
             name="background_thread_daemon",
@@ -134,7 +134,7 @@ class BatchAgentCommandTool(Component):
             elif action == "stop":
                 result = self._stop(config)
             elif action == "status":
-                result = self._status()
+                result = self._status(config)
             else:
                 result = {"ok": False, "error": f"Unsupported action: {action}"}
 
@@ -152,9 +152,6 @@ class BatchAgentCommandTool(Component):
                 state = dict(cls._state)
                 self._write_batch_log_safe(config, state.get("run_id"), int(state.get("loop_no") or 0), "ALREADY_RUNNING", message="Batch agent is already running.")
                 return {"ok": True, "status": "already_running", "running": True}
-
-            if config["auto_create_log_table"]:
-                self._ensure_log_table(config)
 
             run_id = datetime.now().strftime("%Y%m%d%H%M%S")
             cls._stop_event.clear()
@@ -186,28 +183,138 @@ class BatchAgentCommandTool(Component):
 
     def _stop(self, config: dict[str, Any]) -> dict[str, Any]:
         cls = self.__class__
-        state = self._status()
+        state = self._status(config)
         cls._stop_event.set()
+        run_id = state.get("run_id") or self._find_latest_active_run_id(config)
+        loop_no = int(state.get("loop_no") or 0)
         with cls._state_lock:
             cls._state["running"] = False
             cls._state["updated_at"] = datetime.now().isoformat(timespec="seconds")
             cls._state["last_event"] = "STOP_REQUESTED"
-        self._write_batch_log_safe(config, state.get("run_id"), int(state.get("loop_no") or 0), "STOP_REQUESTED", message="Stop requested.")
-        return {"ok": True, "status": "stop_requested", "running": False}
+        self._write_batch_log_safe(config, run_id, loop_no, "STOP_REQUESTED", message="Stop requested.")
+        return {"ok": True, "status": "stop_requested", "running": False, "run_id": run_id}
 
-    def _status(self) -> dict[str, Any]:
+    def _status(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         cls = self.__class__
-        alive = bool((cls._thread and cls._thread.is_alive() and not cls._stop_event.is_set()) or (cls._state.get("running") and not cls._stop_event.is_set()))
+        memory_alive = bool(cls._thread and cls._thread.is_alive() and not cls._stop_event.is_set())
         with cls._state_lock:
             state = dict(cls._state)
-        state["running"] = alive
+        state_alive = bool(state.get("running") and not cls._stop_event.is_set())
+        log_status = self._status_from_batch_log(config) if config else {}
+        log_alive = bool(log_status.get("running_inferred_from_log"))
+        state["running"] = bool(memory_alive or state_alive or log_alive)
+        state["memory_thread_alive"] = memory_alive
+        state["memory_state_running"] = state_alive
+        state["status_source"] = "memory" if (memory_alive or state_alive) else ("batch_log" if log_alive else "none")
+        if log_status:
+            state["log_status"] = log_status
+            if log_alive:
+                state["run_id"] = log_status.get("run_id") or state.get("run_id")
+                state["loop_no"] = log_status.get("loop_no") or state.get("loop_no")
+                state["last_event"] = log_status.get("last_event") or state.get("last_event")
+                state["last_agent"] = log_status.get("last_agent") or state.get("last_agent")
+                state["last_job_id"] = log_status.get("last_job_id") or state.get("last_job_id")
+                state["last_job_status"] = log_status.get("last_job_status") or state.get("last_job_status")
+                state["last_error"] = log_status.get("last_error") or state.get("last_error")
+                if not memory_alive and not state_alive:
+                    state["warning"] = "Batch loop is inferred from NEXT_BATCH_LOG, but this status call cannot see the in-memory thread handle."
         return {"ok": True, **state}
+
+    def _status_from_batch_log(self, config: dict[str, Any]) -> dict[str, Any]:
+        table = self._qualify_table("NEXT_BATCH_LOG", config["system_schema"])
+        grace_seconds = max(1, int(config.get("status_log_alive_grace_seconds") or 1800))
+        sql = f"""
+            SELECT RUN_ID, LOOP_NO, EVENT_TYPE, AGENT_NAME, JOB_ID, JOB_STATUS,
+                   MESSAGE, ERROR_MESSAGE, SLEEP_SECONDS,
+                   TO_CHAR(STARTED_AT, 'YYYY-MM-DD HH24:MI:SS') AS STARTED_AT_TEXT,
+                   TO_CHAR(FINISHED_AT, 'YYYY-MM-DD HH24:MI:SS') AS FINISHED_AT_TEXT,
+                   CASE
+                     WHEN EVENT_TYPE NOT IN ('STOPPED', 'STOP_REQUESTED')
+                      AND FINISHED_AT >= LOCALTIMESTAMP - NUMTODSINTERVAL(:1, 'SECOND')
+                     THEN 1
+                     ELSE 0
+                   END AS RUNNING_INFERRED
+            FROM (
+                SELECT *
+                FROM {table}
+                ORDER BY LOG_ID DESC
+            )
+            WHERE ROWNUM <= 1
+        """
+        try:
+            rows = self._query(config, sql, [grace_seconds])
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        if not rows:
+            return {"ok": True, "running_inferred_from_log": False, "message": "No NEXT_BATCH_LOG rows found."}
+
+        row = rows[0]
+        return {
+            "ok": True,
+            "running_inferred_from_log": bool(row[11]),
+            "run_id": self._to_text(row[0]),
+            "loop_no": row[1],
+            "last_event": self._to_text(row[2]),
+            "last_agent": self._to_text(row[3]),
+            "last_job_id": self._to_text(row[4]),
+            "last_job_status": self._to_text(row[5]),
+            "message": self._to_text(row[6]),
+            "last_error": self._to_text(row[7]),
+            "sleep_seconds": row[8],
+            "started_at": self._to_text(row[9]),
+            "finished_at": self._to_text(row[10]),
+            "grace_seconds": grace_seconds,
+        }
+
+    def _find_latest_active_run_id(self, config: dict[str, Any]) -> str | None:
+        table = self._qualify_table("NEXT_BATCH_LOG", config["system_schema"])
+        sql = f"""
+            SELECT RUN_ID
+            FROM (
+                SELECT RUN_ID
+                FROM {table}
+                WHERE RUN_ID IS NOT NULL
+                GROUP BY RUN_ID
+                HAVING MAX(CASE WHEN EVENT_TYPE = 'STOPPED' THEN 1 ELSE 0 END) = 0
+                ORDER BY MAX(LOG_ID) DESC
+            )
+            WHERE ROWNUM <= 1
+        """
+        try:
+            rows = self._query(config, sql)
+        except Exception:
+            return None
+        if not rows:
+            return None
+        return self._to_text(rows[0][0]) or None
+
+    def _is_db_stop_requested(self, config: dict[str, Any], run_id: str) -> bool:
+        if not run_id:
+            return False
+        table = self._qualify_table("NEXT_BATCH_LOG", config["system_schema"])
+        sql = f"""
+            SELECT EVENT_TYPE
+            FROM (
+                SELECT EVENT_TYPE
+                FROM {table}
+                WHERE RUN_ID = :1
+                ORDER BY LOG_ID DESC
+            )
+            WHERE ROWNUM <= 1
+        """
+        try:
+            rows = self._query(config, sql, [run_id])
+        except Exception:
+            return False
+        if not rows:
+            return False
+        return self._to_text(rows[0][0]).strip().upper() == "STOP_REQUESTED"
 
     @classmethod
     def _worker_loop(cls, config: dict[str, Any], run_id: str) -> None:
         helper = object.__new__(cls)
         try:
-            while not cls._stop_event.is_set():
+            while not cls._stop_event.is_set() and not helper._is_db_stop_requested(config, run_id):
                 with cls._state_lock:
                     cls._state["loop_no"] = int(cls._state.get("loop_no") or 0) + 1
                     loop_no = int(cls._state["loop_no"])
@@ -247,7 +354,7 @@ class BatchAgentCommandTool(Component):
                         elapsed_seconds=elapsed,
                     )
                     if sleep_seconds > 0:
-                        helper._interruptible_sleep(sleep_seconds)
+                        helper._interruptible_sleep(sleep_seconds, config, run_id)
 
                 except Exception as exc:
                     elapsed = round(time.perf_counter() - started, 3)
@@ -266,7 +373,7 @@ class BatchAgentCommandTool(Component):
                         sleep_seconds=int(config["error_sleep_seconds"]),
                         elapsed_seconds=elapsed,
                     )
-                    helper._interruptible_sleep(int(config["error_sleep_seconds"]))
+                    helper._interruptible_sleep(int(config["error_sleep_seconds"]), config, run_id)
         finally:
             with cls._state_lock:
                 cls._state["running"] = False
@@ -396,11 +503,11 @@ class BatchAgentCommandTool(Component):
             "source_schema": str(self.source_schema or "").strip(),
             "target_schema": str(self.target_schema or "").strip(),
             "migration_max_attempts": max(1, int(self.migration_max_attempts or 3)),
-            "sql_conversion_max_attempts": max(1, int(self.sql_conversion_max_attempts or 1)),
+            "sql_conversion_max_attempts": max(1, int(self.sql_conversion_max_attempts or 3)),
             "no_job_sleep_seconds": max(1, int(self.no_job_sleep_seconds or 600)),
             "error_sleep_seconds": max(1, int(self.error_sleep_seconds or 60)),
+            "status_log_alive_grace_seconds": max(1, int(self.status_log_alive_grace_seconds or 1800)),
             "auto_install_packages": self._as_bool(self.auto_install_packages),
-            "auto_create_log_table": self._as_bool(self.auto_create_log_table),
             "background_thread_daemon": self._as_bool(self.background_thread_daemon),
         }
 
@@ -460,34 +567,6 @@ class BatchAgentCommandTool(Component):
             cur = conn.cursor()
             cur.execute(sql, params or [])
             return cur.fetchall()
-
-    def _ensure_log_table(self, config: dict[str, Any]) -> None:
-        table = self._qualify_table("NEXT_BATCH_LOG", config["system_schema"])
-        ddl = f"""
-            CREATE TABLE {table} (
-                LOG_ID NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-                RUN_ID VARCHAR2(64) NOT NULL,
-                LOOP_NO NUMBER NOT NULL,
-                EVENT_TYPE VARCHAR2(30) NOT NULL,
-                AGENT_NAME VARCHAR2(50),
-                JOB_ID VARCHAR2(200),
-                JOB_STATUS VARCHAR2(50),
-                MESSAGE VARCHAR2(1000),
-                ERROR_MESSAGE CLOB,
-                SLEEP_SECONDS NUMBER,
-                STARTED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FINISHED_AT TIMESTAMP,
-                ELAPSED_SECONDS NUMBER
-            )
-        """
-        try:
-            with self._connect(config) as conn:
-                cur = conn.cursor()
-                cur.execute(ddl)
-                conn.commit()
-        except Exception as exc:
-            if "ORA-00955" not in str(exc):
-                raise
 
     def _write_batch_log_safe(
         self,
@@ -562,10 +641,12 @@ class BatchAgentCommandTool(Component):
             )
             conn.commit()
 
-    def _interruptible_sleep(self, seconds: int) -> None:
+    def _interruptible_sleep(self, seconds: int, config: dict[str, Any] | None = None, run_id: str | None = None) -> None:
         deadline = time.time() + max(0, int(seconds))
         while time.time() < deadline:
             if self.__class__._stop_event.is_set():
+                break
+            if config and run_id and self._is_db_stop_requested(config, run_id):
                 break
             time.sleep(min(1.0, max(0.0, deadline - time.time())))
 
@@ -1403,14 +1484,24 @@ class BatchAgentCommandTool(Component):
         body = json.dumps(payload).encode("utf-8")
         req_headers = {"Content-Type": "application/json", **headers}
         request = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
-        try:
-            timeout_seconds = max(1, int(self.llm_timeout_seconds or 900))
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                raw = response.read().decode("utf-8", errors="ignore")
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")[:1000]
-            raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+        timeout_seconds = max(1, int(self.llm_timeout_seconds or 900))
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                    raw = response.read().decode("utf-8", errors="ignore")
+                    return json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="ignore")[:1000]
+                last_error = RuntimeError(f"HTTP {exc.code}: {detail}")
+                if exc.code not in {429, 502, 503, 504} or attempt >= 3:
+                    raise last_error from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                last_error = RuntimeError(f"LLM request failed: {exc}")
+                if attempt >= 3:
+                    raise last_error from exc
+            time.sleep(min(8, 2 ** (attempt - 1)))
+        raise last_error or RuntimeError("LLM request failed")
 
     def _mig__normalize_query_rows(self, raw: Any) -> list[dict[str, Any]]:
         if raw is None or raw == "":
@@ -2363,7 +2454,7 @@ class BatchAgentCommandTool(Component):
         space_nm = str(space_nm or "").strip()
 
         started = time.perf_counter()
-        max_attempts = max(1, int(command.get("max_attempts") or 1))
+        max_attempts = max(1, int(command.get("max_attempts") or 3))
 
         job = self._sql__load_job(space_nm, sql_id)
         if not job:
@@ -2401,7 +2492,10 @@ class BatchAgentCommandTool(Component):
                         last_to_sql = to_sql
                         steps.append({"step": "generate_to_sql", "attempt": attempt, "status": "SUCCESS-TOBE", "message": "USER_EDITED=Y. Existing TO_SQL was used."})
                     else:
-                        to_sql_result = self._sql__generate_to_sql(space_nm, sql_id, last_error=last_failure.get("error", ""))
+                        try:
+                            to_sql_result = self._sql__generate_to_sql(space_nm, sql_id, last_error=last_failure.get("error", ""))
+                        except Exception as exc:
+                            to_sql_result = {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": "FAIL-TOBE", "error": str(exc), "db_updated": False}
                         if to_sql_result.get("ok"):
                             to_sql_result["status"] = "SUCCESS-TOBE"
                         steps.append({"step": "generate_to_sql", "attempt": attempt, **self._sql__summary_result(to_sql_result)})
@@ -2519,7 +2613,7 @@ class BatchAgentCommandTool(Component):
                             continue
                         break
 
-            final_status = str(last_failure.get("status") or "FAIL-CONVERSION")
+            final_status = str(last_failure.get("status") or self._sql__fallback_conversion_failure_status(last_to_sql, last_bind_sql, last_bind_set, last_test_sql))
             elapsed = int(time.perf_counter() - started)
             self._sql__save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
             self._sql__update_job_status(sql_id, space_nm, final_status, elapsed, last_retry_count)
@@ -2527,10 +2621,11 @@ class BatchAgentCommandTool(Component):
             return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": final_status, "error": last_failure.get("error") or "Max attempts reached", "elapsed_seconds": elapsed, "retry_count": last_retry_count, "steps": steps}
         except Exception as exc:
             elapsed = int(time.perf_counter() - started)
+            final_status = self._sql__fallback_conversion_failure_status(last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
             self._sql__save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
-            self._sql__update_job_status(sql_id, space_nm, "FAIL-CONVERSION", elapsed, last_retry_count)
+            self._sql__update_job_status(sql_id, space_nm, final_status, elapsed, last_retry_count)
             self._sql__write_log(sql_id, space_nm, "ERROR", "FAIL", "RUN_FULL", str(exc)[:3900], last_retry_count, last_test_sql or last_bind_sql or last_to_sql, elapsed)
-            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": "FAIL-CONVERSION", "error": str(exc), "elapsed_seconds": elapsed, "retry_count": last_retry_count, "steps": steps}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": final_status, "error": str(exc), "elapsed_seconds": elapsed, "retry_count": last_retry_count, "steps": steps}
 
     # ======================================================================
     # 공통 코드
@@ -2613,14 +2708,24 @@ class BatchAgentCommandTool(Component):
         body = json.dumps(payload).encode("utf-8")
         req_headers = {"Content-Type": "application/json", **headers}
         request = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
-        try:
-            timeout_seconds = max(1, int(self.llm_timeout_seconds or 900))
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                raw = response.read().decode("utf-8", errors="ignore")
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")[:1000]
-            raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+        timeout_seconds = max(1, int(self.llm_timeout_seconds or 900))
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                    raw = response.read().decode("utf-8", errors="ignore")
+                    return json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="ignore")[:1000]
+                last_error = RuntimeError(f"HTTP {exc.code}: {detail}")
+                if exc.code not in {429, 502, 503, 504} or attempt >= 3:
+                    raise last_error from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                last_error = RuntimeError(f"LLM request failed: {exc}")
+                if attempt >= 3:
+                    raise last_error from exc
+            time.sleep(min(8, 2 ** (attempt - 1)))
+        raise last_error or RuntimeError("LLM request failed")
 
     @contextmanager
     def _sql__connect(self):
@@ -3073,6 +3178,13 @@ class BatchAgentCommandTool(Component):
             if key in result:
                 summary[key] = result.get(key)
         return summary
+
+    def _sql__fallback_conversion_failure_status(self, to_sql: str, bind_sql: str, bind_set: str, test_sql: str) -> str:
+        if not self._sql__to_text(to_sql).strip():
+            return "FAIL-TOBE"
+        if not self._sql__to_text(bind_sql).strip() or not self._sql__to_text(bind_set).strip():
+            return "FAIL-BIND"
+        return "FAIL-TEST"
 
     def _sql__extract_target_fr_tables(self, value: Any) -> list[str]:
         text = self._sql__to_text(value).strip()

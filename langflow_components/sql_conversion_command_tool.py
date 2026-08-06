@@ -477,7 +477,7 @@ class SqlConversionCommandTool(Component):
 
         # job 실행에 걸린 시간 측정 : 이 코드 기준 - 최종 PASS/FAIL 상태 저장 시 elapsed_seconds 계산
         started = time.perf_counter()
-        max_attempts = max(1, int(command.get("max_attempts") or 1))
+        max_attempts = max(1, int(command.get("max_attempts") or 3))
 
         # job을 DB에서 조회하고, STATUS_CONVERSION이 NULL인지는 _load_job에서 확인
         job = self._load_job(space_nm, sql_id)
@@ -523,7 +523,10 @@ class SqlConversionCommandTool(Component):
                         steps.append({"step": "generate_to_sql", "attempt": attempt, "status": "SUCCESS-TOBE", "message": "USER_EDITED=Y. Existing TO_SQL was used."})
                     # user_edited가 N이면 LLM으로 TO_SQL을 새로 생성한다.
                     else:
-                        to_sql_result = self._generate_to_sql(space_nm, sql_id, last_error=last_failure.get("error", ""))
+                        try:
+                            to_sql_result = self._generate_to_sql(space_nm, sql_id, last_error=last_failure.get("error", ""))
+                        except Exception as exc:
+                            to_sql_result = {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": "FAIL-TOBE", "error": str(exc), "db_updated": False}
                         if to_sql_result.get("ok"):
                             to_sql_result["status"] = "SUCCESS-TOBE"
                         steps.append({"step": "generate_to_sql", "attempt": attempt, **self._summary_result(to_sql_result)})
@@ -646,7 +649,7 @@ class SqlConversionCommandTool(Component):
                         break
 
             # 모든 재시도가 PASS 없이 끝나면 마지막 실패 상태와 생성된 SQL을 저장한다.
-            final_status = str(last_failure.get("status") or "FAIL-CONVERSION")
+            final_status = str(last_failure.get("status") or self._fallback_conversion_failure_status(last_to_sql, last_bind_sql, last_bind_set, last_test_sql))
             elapsed = int(time.perf_counter() - started)
             self._save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
             self._update_job_status(sql_id, space_nm, final_status, elapsed, last_retry_count)
@@ -655,10 +658,11 @@ class SqlConversionCommandTool(Component):
         except Exception as exc:
             # 예상하지 못한 예외도 최종 실패로 저장하고, 현재까지 생성된 SQL을 함께 남긴다.
             elapsed = int(time.perf_counter() - started)
+            final_status = self._fallback_conversion_failure_status(last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
             self._save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
-            self._update_job_status(sql_id, space_nm, "FAIL-CONVERSION", elapsed, last_retry_count)
+            self._update_job_status(sql_id, space_nm, final_status, elapsed, last_retry_count)
             self._write_log(sql_id, space_nm, "ERROR", "FAIL", "RUN_FULL", str(exc)[:3900], last_retry_count, last_test_sql or last_bind_sql or last_to_sql, elapsed)
-            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": "FAIL-CONVERSION", "error": str(exc), "elapsed_seconds": elapsed, "retry_count": last_retry_count, "steps": steps}
+            return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": final_status, "error": str(exc), "elapsed_seconds": elapsed, "retry_count": last_retry_count, "steps": steps}
 
     # ======================================================================
     # 공통 코드
@@ -744,14 +748,24 @@ class SqlConversionCommandTool(Component):
         body = json.dumps(payload).encode("utf-8")
         req_headers = {"Content-Type": "application/json", **headers}
         request = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
-        try:
-            timeout_seconds = max(1, int(self.llm_timeout_seconds or 900))
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                raw = response.read().decode("utf-8", errors="ignore")
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")[:1000]
-            raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+        timeout_seconds = max(1, int(self.llm_timeout_seconds or 900))
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                    raw = response.read().decode("utf-8", errors="ignore")
+                    return json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="ignore")[:1000]
+                last_error = RuntimeError(f"HTTP {exc.code}: {detail}")
+                if exc.code not in {429, 502, 503, 504} or attempt >= 3:
+                    raise last_error from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                last_error = RuntimeError(f"LLM request failed: {exc}")
+                if attempt >= 3:
+                    raise last_error from exc
+            time.sleep(min(8, 2 ** (attempt - 1)))
+        raise last_error or RuntimeError("LLM request failed")
 
     # SQLDatabase 내부 engine에서 DB connection을 꺼내 cursor 작업에 사용한다.
     @contextmanager
@@ -1217,6 +1231,13 @@ class SqlConversionCommandTool(Component):
         return summary
 
     # TARGET_TABLE JSON 배열에서 FR_TABLE 목록을 꺼낸다.
+    def _fallback_conversion_failure_status(self, to_sql: str, bind_sql: str, bind_set: str, test_sql: str) -> str:
+        if not self._to_text(to_sql).strip():
+            return "FAIL-TOBE"
+        if not self._to_text(bind_sql).strip() or not self._to_text(bind_set).strip():
+            return "FAIL-BIND"
+        return "FAIL-TEST"
+
     def _extract_target_fr_tables(self, value: Any) -> list[str]:
         text = self._to_text(value).strip()
         if not text:
