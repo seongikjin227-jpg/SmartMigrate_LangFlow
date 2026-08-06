@@ -750,6 +750,8 @@ class MigrationCommandTool(Component):
                             self._truncate_target(job)
                             self._write_log(map_id, "EXECUTE_SQL", "INFO", "TRUNCATE", "PASS", "Target table truncated", retry_count)
                         affected_rows = self._execute_sql_script(mig_sql)
+                        if affected_rows <= 0:
+                            raise ValueError("Migration SQL affected 0 rows")
                         mig_exec_result = {
                             "ok": True,
                             "map_id": map_id,
