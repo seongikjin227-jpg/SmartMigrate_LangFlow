@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -10,7 +12,7 @@ from typing import Any
 from urllib.parse import quote_plus
 
 from lfx.custom.custom_component.component import Component
-from lfx.io import IntInput, MessageTextInput, SecretStrInput, StrInput, Output
+from lfx.io import BoolInput, IntInput, MessageTextInput, SecretStrInput, StrInput, Output
 from lfx.schema.data import Data
 
 
@@ -88,6 +90,13 @@ class SqlConversionCommandTool(Component):
             display_name="Target Schema",
             required=False,
             info="Target schema to apply to physical TO-BE tables.",
+        ),
+        BoolInput(
+            name="auto_install_packages",
+            display_name="Auto Install Missing Packages",
+            value=False,
+            required=False,
+            info="If true, installs missing runtime packages with pip before DB connection.",
         ),
     ]
 
@@ -684,6 +693,7 @@ class SqlConversionCommandTool(Component):
     # 같은 DB 접속 정보는 _db_cache에서 재사용한다.
     # 랭플로우에서 SQLDatabase.from_uri 를 사용하기 위해 따로 공통함수로 뺌.
     def _get_db(self):
+        self._ensure_runtime_dependencies()
         from langchain_community.utilities import SQLDatabase
 
         cache_key = "|".join(
@@ -698,6 +708,36 @@ class SqlConversionCommandTool(Component):
             self._db_cache[cache_key] = SQLDatabase.from_uri(self._connection_string())
         self.db = self._db_cache[cache_key]
         return self.db
+
+    # DB 연결에 필요한 파이썬 패키지가 import 가능한지 확인한다.
+    def _ensure_runtime_dependencies(self) -> None:
+        missing_packages: list[str] = []
+        try:
+            import langchain_community
+        except ModuleNotFoundError:
+            missing_packages.append("langchain-community")
+        try:
+            import sqlalchemy
+        except ModuleNotFoundError:
+            missing_packages.append("SQLAlchemy")
+        try:
+            import oracledb
+        except ModuleNotFoundError:
+            missing_packages.append("oracledb")
+
+        if not missing_packages:
+            return
+        if not self._as_bool(getattr(self, "auto_install_packages", False)):
+            raise ModuleNotFoundError(
+                "Missing packages: "
+                + ", ".join(missing_packages)
+                + ". Enable Auto Install Missing Packages or install them in the Langflow runtime."
+            )
+        for package in missing_packages:
+            self._pip_install(package)
+
+    def _pip_install(self, package: str) -> None:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
     # OpenAI 호환 LLM API에 JSON 요청을 보내고 응답 dict를 반환한다.
     def _post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
@@ -1222,3 +1262,9 @@ class SqlConversionCommandTool(Component):
             return value.decode("utf-8", errors="ignore")
         return str(value)
 
+    def _as_bool(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"1", "true", "t", "y", "yes", "on"}

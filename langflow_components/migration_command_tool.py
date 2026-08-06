@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 import json
 import re
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -12,7 +14,7 @@ from urllib.parse import quote_plus
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
-from lfx.io import IntInput, MessageTextInput, SecretStrInput, StrInput, Output
+from lfx.io import BoolInput, IntInput, MessageTextInput, SecretStrInput, StrInput, Output
 from lfx.schema.data import Data
 
 class MigrationCommandTool(Component):
@@ -126,6 +128,13 @@ class MigrationCommandTool(Component):
             display_name="Default Max Attempts",
             value=3,
             required=False,
+        ),
+        BoolInput(
+            name="auto_install_packages",
+            display_name="Auto Install Missing Packages",
+            value=False,
+            required=False,
+            info="If true, installs missing runtime packages with pip before DB connection.",
         ),
     ]
 
@@ -933,9 +942,33 @@ class MigrationCommandTool(Component):
 
     # DB 연결에 필요한 런타임 패키지가 import 가능한지 확인한다.
     def _ensure_runtime_dependencies(self) -> None:
-        import langchain_community
-        import sqlalchemy
-        import oracledb
+        missing_packages: list[str] = []
+        try:
+            import langchain_community
+        except ModuleNotFoundError:
+            missing_packages.append("langchain-community")
+        try:
+            import sqlalchemy
+        except ModuleNotFoundError:
+            missing_packages.append("SQLAlchemy")
+        try:
+            import oracledb
+        except ModuleNotFoundError:
+            missing_packages.append("oracledb")
+
+        if not missing_packages:
+            return
+        if not self._as_bool(getattr(self, "auto_install_packages", False)):
+            raise ModuleNotFoundError(
+                "Missing packages: "
+                + ", ".join(missing_packages)
+                + ". Enable Auto Install Missing Packages or install them in the Langflow runtime."
+            )
+        for package in missing_packages:
+            self._pip_install(package)
+
+    def _pip_install(self, package: str) -> None:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
     # LLM API로 JSON POST 요청을 보내고 응답 JSON을 dict로 반환한다.
     def _post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:

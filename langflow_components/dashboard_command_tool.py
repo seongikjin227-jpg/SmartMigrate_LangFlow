@@ -307,7 +307,7 @@ class DashboardCommandTool(Component):
 
         if not missing_packages:
             return
-        if not bool(self.auto_install_packages):
+        if not self._as_bool(getattr(self, "auto_install_packages", False)):
             raise ModuleNotFoundError(
                 "Missing packages: "
                 + ", ".join(missing_packages)
@@ -318,6 +318,13 @@ class DashboardCommandTool(Component):
 
     def _pip_install(self, package: str) -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+    def _as_bool(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"1", "true", "t", "y", "yes", "on"}
 
     @contextmanager
     def _connect(self):
