@@ -1,23 +1,26 @@
-# Batch Agent Command Tool
+﻿# Batch Agent Command Tool
 
-파일: `langflow_components/batch_agent_command_tool.py`
+?뚯씪: `langflow_components/batch_agent_command_tool.py`
 
-이 컴포넌트는 Langflow 단독 컨테이너 안에서 SmartMigration 배치 에이전트를 백그라운드 thread로 실행한다.
+??而댄룷?뚰듃??Langflow ?⑤룆 而⑦뀒?대꼫 ?덉뿉??SmartMigration 諛곗튂 ?먯씠?꾪듃瑜?諛깃렇?쇱슫??thread濡??ㅽ뻾?쒕떎.
 
-기존 파일은 수정하지 않는다.
+湲곗〈 ?뚯씪? ?섏젙?섏? ?딅뒗??
 
 - `langflow_components/migration_command_tool.py`
 - `langflow_components/sql_conversion_command_tool.py`
 
-배치 컴포넌트는 위 두 컴포넌트의 실행 로직을 import해서 재사용한다. 배치 컴포넌트가 직접 담당하는 것은 thread 제어, polling, agent 분기, batch log 저장뿐이다.
+Langflow Custom Component ?고??꾩뿉?쒕뒗 ?ㅻⅨ custom component ?뚯씪 import媛 留됲엳嫄곕굹 寃쎈줈媛 留욎? ?딆쓣 ???덈떎.
+洹몃옒??諛곗튂 而댄룷?뚰듃 ?뚯씪 ?덉뿉 `MigrationCommandTool`, `SqlConversionCommandTool` 援ы쁽???④퍡 蹂듭궗???붾떎.
 
-## 역할 구분
+諛곗튂 而댄룷?뚰듃媛 吏곸젒 ?대떦?섎뒗 寃껋? thread ?쒖뼱, polling, agent 遺꾧린, batch log ??μ씠怨? ?ㅼ젣 job ?ㅽ뻾? 媛숈? ?뚯씪 ?덉뿉 蹂듭궗??command tool ?대옒?ㅼ쓽 ?ㅽ뻾 ?⑥닔瑜??ъ슜?쒕떎.
+
+## ??븷 援щ텇
 
 ### DB Migration Agent / SQL Conversion Agent
 
-채팅형 운영 인터페이스다.
+梨꾪똿???댁쁺 ?명꽣?섏씠?ㅻ떎.
 
-사용자 요청에 따라 다양한 action을 수행한다.
+?ъ슜???붿껌???곕씪 ?ㅼ뼇??action???섑뻾?쒕떎.
 
 ```text
 status
@@ -33,11 +36,11 @@ run_sql_conversion_job
 
 ### Background Batch Agent
 
-무인 배치 worker다.
+臾댁씤 諛곗튂 worker??
 
-사용자 요청을 해석하지 않고, DB 상태만 보고 deterministic하게 움직인다.
+?ъ슜???붿껌???댁꽍?섏? ?딄퀬, DB ?곹깭留?蹂닿퀬 deterministic?섍쾶 ?吏곸씤??
 
-외부 action은 아래만 지원한다.
+?몃? action? ?꾨옒留?吏?먰븳??
 
 ```text
 start
@@ -45,41 +48,40 @@ stop
 status
 ```
 
-내부 loop에서만 아래 실행 action을 호출한다.
+?대? loop?먯꽌留??꾨옒 ?ㅽ뻾 action???몄텧?쒕떎.
 
 ```text
 run_migration_job
 run_sql_conversion_job
 ```
 
-`status`, `reset`, `save_user_sql`, `generate_* preview`, `analyze_failure` 같은 채팅형 action은 배치 loop에서 호출하지 않는다.
+`status`, `reset`, `save_user_sql`, `generate_* preview`, `analyze_failure` 媛숈? 梨꾪똿??action? 諛곗튂 loop?먯꽌 ?몄텧?섏? ?딅뒗??
 
-## Langflow 연결
+## Langflow ?곌껐
 
-예상 Flow:
+?덉긽 Flow:
 
 ```text
 Chat Input
 -> Supervisor Agent
 -> Batch Agent Command Tool
--> Chat Output 또는 미연결
-```
+-> Chat Output ?먮뒗 誘몄뿰寃?```
 
-사용자가 Langflow Playground에서 아래처럼 입력한다.
+?ъ슜?먭? Langflow Playground?먯꽌 ?꾨옒泥섎읆 ?낅젰?쒕떎.
 
 ```text
-백그라운드 배치 에이전트 실행
+諛깃렇?쇱슫??諛곗튂 ?먯씠?꾪듃 ?ㅽ뻾
 ```
 
-Supervisor Agent는 Batch Agent Command Tool에 아래 command를 전달한다.
+Supervisor Agent??Batch Agent Command Tool???꾨옒 command瑜??꾨떖?쒕떎.
 
 ```json
 {"action":"start"}
 ```
 
-Tool은 백그라운드 thread를 시작하고 즉시 반환한다. 무한 loop는 chat request thread에서 직접 돌지 않는다.
+Tool? 諛깃렇?쇱슫??thread瑜??쒖옉?섍퀬 利됱떆 諛섑솚?쒕떎. 臾댄븳 loop??chat request thread?먯꽌 吏곸젒 ?뚯? ?딅뒗??
 
-## 지원 command
+## 吏??command
 
 ### start
 
@@ -87,14 +89,14 @@ Tool은 백그라운드 thread를 시작하고 즉시 반환한다. 무한 loop�
 {"action":"start"}
 ```
 
-동작:
+?숈옉:
 
 ```text
-1. 이미 실행 중인지 확인한다.
-2. 실행 중이면 새 thread를 만들지 않고 already_running으로 끝낸다.
-3. 실행 중이 아니면 AG_BATCH_AGENT_LOG 테이블을 생성한다. auto_create_log_table=true인 경우.
-4. background daemon thread를 시작한다.
-5. START 로그를 저장한다.
+1. ?대? ?ㅽ뻾 以묒씤吏 ?뺤씤?쒕떎.
+2. ?ㅽ뻾 以묒씠硫???thread瑜?留뚮뱾吏 ?딄퀬 already_running?쇰줈 ?앸궦??
+3. ?ㅽ뻾 以묒씠 ?꾨땲硫?NEXT_BATCH_LOG ?뚯씠釉붿쓣 ?앹꽦?쒕떎. auto_create_log_table=true??寃쎌슦.
+4. background daemon thread瑜??쒖옉?쒕떎.
+5. START 濡쒓렇瑜???ν븳??
 ```
 
 ### stop
@@ -103,12 +105,12 @@ Tool은 백그라운드 thread를 시작하고 즉시 반환한다. 무한 loop�
 {"action":"stop"}
 ```
 
-동작:
+?숈옉:
 
 ```text
-1. stop_event를 set한다.
-2. 긴 sleep 중이어도 최대 1초 단위로 깨어나 stop 요청을 확인한다.
-3. STOP_REQUESTED, STOPPED 로그를 저장한다.
+1. stop_event瑜?set?쒕떎.
+2. 湲?sleep 以묒씠?대룄 理쒕? 1珥??⑥쐞濡?源⑥뼱??stop ?붿껌???뺤씤?쒕떎.
+3. STOP_REQUESTED, STOPPED 濡쒓렇瑜???ν븳??
 ```
 
 ### status
@@ -117,19 +119,19 @@ Tool은 백그라운드 thread를 시작하고 즉시 반환한다. 무한 loop�
 {"action":"status"}
 ```
 
-동작:
+?숈옉:
 
 ```text
-현재 background thread 상태, run_id, loop_no, 마지막 event, 마지막 job 정보를 반환한다.
+?꾩옱 background thread ?곹깭, run_id, loop_no, 留덉?留?event, 留덉?留?job ?뺣낫瑜?諛섑솚?쒕떎.
 ```
 
-이 반환값은 Chat Output에 꼭 연결할 필요는 없다. Langflow 실행 로그나 디버깅용으로만 사용해도 된다.
+??諛섑솚媛믪? Chat Output??瑗??곌껐???꾩슂???녿떎. Langflow ?ㅽ뻾 濡쒓렇???붾쾭源낆슜?쇰줈留??ъ슜?대룄 ?쒕떎.
 
-## Batch Loop 정책
+## Batch Loop ?뺤콉
 
-한 cycle에서는 job을 최대 1건만 처리한다.
+??cycle?먯꽌??job??理쒕? 1嫄대쭔 泥섎━?쒕떎.
 
-우선순위:
+?곗꽑?쒖쐞:
 
 ```text
 1. DB_MIGRATION
@@ -141,31 +143,24 @@ Loop:
 
 ```text
 while stop_event is not set:
-  1. NEXT_MIG_INFO에서 pending migration job 1건 조회
-  2. 있으면 run_migration_job(map_id) 실행
-  3. 실행 결과를 AG_BATCH_AGENT_LOG에 저장
-  4. job을 실행했으면 sleep 없이 바로 다음 loop
+  1. NEXT_MIG_INFO?먯꽌 pending migration job 1嫄?議고쉶
+  2. ?덉쑝硫?run_migration_job(map_id) ?ㅽ뻾
+  3. ?ㅽ뻾 寃곌낵瑜?NEXT_BATCH_LOG?????  4. job???ㅽ뻾?덉쑝硫?sleep ?놁씠 諛붾줈 ?ㅼ쓬 loop
 
-  5. migration job이 없으면 NEXT_SQL_INFO에서 pending SQL conversion job 1건 조회
-  6. 있으면 run_sql_conversion_job(space_nm, sql_id) 실행
-  7. 실행 결과를 AG_BATCH_AGENT_LOG에 저장
-  8. job을 실행했으면 sleep 없이 바로 다음 loop
+  5. migration job???놁쑝硫?NEXT_SQL_INFO?먯꽌 pending SQL conversion job 1嫄?議고쉶
+  6. ?덉쑝硫?run_sql_conversion_job(space_nm, sql_id) ?ㅽ뻾
+  7. ?ㅽ뻾 寃곌낵瑜?NEXT_BATCH_LOG?????  8. job???ㅽ뻾?덉쑝硫?sleep ?놁씠 諛붾줈 ?ㅼ쓬 loop
 
-  9. 둘 다 없으면 NO_JOB 로그 저장
-  10. no_job_sleep_seconds 만큼 대기
-```
+  9. ?????놁쑝硫?NO_JOB 濡쒓렇 ???  10. no_job_sleep_seconds 留뚰겮 ?湲?```
 
-기본 대기:
+湲곕낯 ?湲?
 
 ```text
-job 실행함: 0초
-job 없음: 600초
-loop error: 60초
-```
+job ?ㅽ뻾?? 0珥?job ?놁쓬: 600珥?loop error: 60珥?```
 
-`no_job_sleep_seconds`와 `error_sleep_seconds`는 Langflow component input에서 조정한다.
+`no_job_sleep_seconds`? `error_sleep_seconds`??Langflow component input?먯꽌 議곗젙?쒕떎.
 
-## Pending Job 조건
+## Pending Job 議곌굔
 
 ### DB Migration
 
@@ -177,13 +172,13 @@ WHERE UPPER(TRIM(NVL(USE_YN, 'N'))) = 'Y'
 ORDER BY PRIORITY ASC, MAP_ID ASC
 ```
 
-실행:
+?ㅽ뻾:
 
 ```json
 {"action":"run_migration_job","map_id":101}
 ```
 
-실제 호출은 기존 `MigrationCommandTool._run_migration_job()`을 사용한다.
+?ㅼ젣 ?몄텧? `batch_agent_command_tool.py` ?덉뿉 蹂듭궗??`MigrationCommandTool._run_migration_job()`???ъ슜?쒕떎.
 
 ### SQL Conversion
 
@@ -194,24 +189,24 @@ WHERE STATUS_CONVERSION IS NULL
 ORDER BY PRIORITY ASC NULLS LAST, UPD_TS NULLS FIRST, SPACE_NM, SQL_ID
 ```
 
-실행:
+?ㅽ뻾:
 
 ```json
 {"action":"run_sql_conversion_job","space_nm":"...","sql_id":"..."}
 ```
 
-실제 호출은 기존 `SqlConversionCommandTool.run_sql_conversion_job()`을 사용한다.
+?ㅼ젣 ?몄텧? `batch_agent_command_tool.py` ?덉뿉 蹂듭궗??`SqlConversionCommandTool.run_sql_conversion_job()`???ъ슜?쒕떎.
 
 ## Batch Log Table
 
-배치 thread가 살아 있는지, 어떤 loop에서 어떤 job을 처리했는지 보기 위한 별도 로그 테이블이다.
+諛곗튂 thread媛 ?댁븘 ?덈뒗吏, ?대뼡 loop?먯꽌 ?대뼡 job??泥섎━?덈뒗吏 蹂닿린 ?꾪븳 蹂꾨룄 濡쒓렇 ?뚯씠釉붿씠??
 
-기존 `NEXT_MIG_LOG`, `NEXT_SQL_LOG`는 job 내부 단계 로그이고, `AG_BATCH_AGENT_LOG`는 배치 worker loop 로그다.
+湲곗〈 `NEXT_MIG_LOG`, `NEXT_SQL_LOG`??job ?대? ?④퀎 濡쒓렇?닿퀬, `NEXT_BATCH_LOG`??諛곗튂 worker loop 濡쒓렇??
 
 DDL:
 
 ```sql
-CREATE TABLE AG_BATCH_AGENT_LOG (
+CREATE TABLE NEXT_BATCH_LOG (
     LOG_ID           NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     RUN_ID           VARCHAR2(64) NOT NULL,
     LOOP_NO          NUMBER NOT NULL,
@@ -228,13 +223,13 @@ CREATE TABLE AG_BATCH_AGENT_LOG (
 );
 ```
 
-Schema를 사용하는 경우:
+Schema瑜??ъ슜?섎뒗 寃쎌슦:
 
 ```sql
-CREATE TABLE {SYSTEM_SCHEMA}.AG_BATCH_AGENT_LOG (...)
+CREATE TABLE {SYSTEM_SCHEMA}.NEXT_BATCH_LOG (...)
 ```
 
-컴포넌트 input `auto_create_log_table=true`이면 `start` 시점에 테이블 생성을 시도한다. 이미 존재하면 무시한다.
+而댄룷?뚰듃 input `auto_create_log_table=true`?대㈃ `start` ?쒖젏???뚯씠釉??앹꽦???쒕룄?쒕떎. ?대? 議댁옱?섎㈃ 臾댁떆?쒕떎.
 
 ## EVENT_TYPE
 
@@ -250,56 +245,57 @@ STOP_REQUESTED
 STOPPED
 ```
 
-## 운영 조회 SQL
+## ?댁쁺 議고쉶 SQL
 
-최근 로그:
+理쒓렐 濡쒓렇:
 
 ```sql
 SELECT *
-FROM AG_BATCH_AGENT_LOG
+FROM NEXT_BATCH_LOG
 ORDER BY LOG_ID DESC
 FETCH FIRST 100 ROWS ONLY;
 ```
 
-현재 실행 run의 최근 로그:
+?꾩옱 ?ㅽ뻾 run??理쒓렐 濡쒓렇:
 
 ```sql
 SELECT *
-FROM AG_BATCH_AGENT_LOG
+FROM NEXT_BATCH_LOG
 WHERE RUN_ID = (
     SELECT RUN_ID
-    FROM AG_BATCH_AGENT_LOG
+    FROM NEXT_BATCH_LOG
     ORDER BY LOG_ID DESC
     FETCH FIRST 1 ROW ONLY
 )
 ORDER BY LOG_ID DESC;
 ```
 
-최근 NO_JOB 확인:
+理쒓렐 NO_JOB ?뺤씤:
 
 ```sql
 SELECT LOG_ID, RUN_ID, LOOP_NO, EVENT_TYPE, SLEEP_SECONDS, STARTED_AT, MESSAGE
-FROM AG_BATCH_AGENT_LOG
+FROM NEXT_BATCH_LOG
 WHERE EVENT_TYPE = 'NO_JOB'
 ORDER BY LOG_ID DESC
 FETCH FIRST 20 ROWS ONLY;
 ```
 
-최근 job 실행 결과:
+理쒓렐 job ?ㅽ뻾 寃곌낵:
 
 ```sql
 SELECT LOG_ID, RUN_ID, LOOP_NO, EVENT_TYPE, AGENT_NAME, JOB_ID, JOB_STATUS,
        ELAPSED_SECONDS, STARTED_AT, MESSAGE, ERROR_MESSAGE
-FROM AG_BATCH_AGENT_LOG
+FROM NEXT_BATCH_LOG
 WHERE EVENT_TYPE IN ('JOB_SUCCESS', 'JOB_FAIL')
 ORDER BY LOG_ID DESC
 FETCH FIRST 50 ROWS ONLY;
 ```
 
-## 주의사항
+## 二쇱쓽?ы빆
 
-Langflow 컨테이너가 재시작되면 background thread도 종료된다. 컨테이너 재시작 후에는 다시 `{"action":"start"}`를 호출해야 한다.
+Langflow 而⑦뀒?대꼫媛 ?ъ떆?묐릺硫?background thread??醫낅즺?쒕떎. 而⑦뀒?대꼫 ?ъ떆???꾩뿉???ㅼ떆 `{"action":"start"}`瑜??몄텧?댁빞 ?쒕떎.
 
-현재 설계는 Langflow 컨테이너 1개 고정을 전제로 한다. 같은 Langflow 컨테이너를 여러 개 replica로 띄우는 운영 구조에서는 Oracle 기반 distributed lock 테이블이 추가로 필요하다.
+?꾩옱 ?ㅺ퀎??Langflow 而⑦뀒?대꼫 1媛?怨좎젙???꾩젣濡??쒕떎. 媛숈? Langflow 而⑦뀒?대꼫瑜??щ윭 媛?replica濡??꾩슦???댁쁺 援ъ“?먯꽌??Oracle 湲곕컲 distributed lock ?뚯씠釉붿씠 異붽?濡??꾩슂?섎떎.
 
-백그라운드 배치가 job을 실행하는 동안 사용자가 채팅형 agent로 같은 job을 수동 실행할 수 있다. 기존 `run_migration_job`, `run_sql_conversion_job`은 실행 직전에 DB 상태를 다시 확인하므로 기본 방어는 있지만, 장기적으로는 `RUNNING` 선점 상태를 추가하는 편이 더 안전하다.
+諛깃렇?쇱슫??諛곗튂媛 job???ㅽ뻾?섎뒗 ?숈븞 ?ъ슜?먭? 梨꾪똿??agent濡?媛숈? job???섎룞 ?ㅽ뻾?????덈떎. 湲곗〈 `run_migration_job`, `run_sql_conversion_job`? ?ㅽ뻾 吏곸쟾??DB ?곹깭瑜??ㅼ떆 ?뺤씤?섎?濡?湲곕낯 諛⑹뼱???덉?留? ?κ린?곸쑝濡쒕뒗 `RUNNING` ?좎젏 ?곹깭瑜?異붽??섎뒗 ?몄씠 ???덉쟾?섎떎.
+
