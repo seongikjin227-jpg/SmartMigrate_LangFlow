@@ -629,7 +629,7 @@ class BatchAgentCommandTool(Component):
             self.status = result
             return Data(data=result)
 
-    # action="test_connection": DB? LLM ?곌껐 ?곹깭瑜??뺤씤?쒕떎.
+    # action="test_connection": DB와 LLM 연결 상태를 확인한다.
     def _mig__test_connection(self) -> dict[str, Any]:
         try:
             rows = self._mig__normalize_query_rows(self._mig__get_db().run("SELECT 1 AS OK FROM DUAL", include_columns=True))
@@ -669,7 +669,7 @@ class BatchAgentCommandTool(Component):
             "llm": llm_result,
         }
 
-    # action="status": map_id 湲곗? master/detail ?곹깭瑜?議고쉶?쒕떎.
+    # action="status": 작업 상태를 조회한다.
     def _mig__status(self, map_id: Any) -> dict[str, Any]:
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
@@ -680,7 +680,7 @@ class BatchAgentCommandTool(Component):
         details = self._mig__load_details(map_id)
         return {"ok": True, "job": job, "details": details}
 
-    # action="list_pending": ?ㅽ뻾 媛?ν븳 migration ?꾨낫瑜?議고쉶?쒕떎.
+    # action="list_pending": 실행 가능한 대기 작업을 조회한다.
     def _mig__list_pending(self, limit: Any) -> dict[str, Any]:
         safe_limit = max(1, min(int(limit or 10), 50))
         map_table = self._mig__qualify_table("NEXT_MIG_INFO", self.system_schema)
@@ -717,7 +717,7 @@ class BatchAgentCommandTool(Component):
         ]
         return {"ok": True, "count": len(jobs), "jobs": jobs}
 
-    # action="get_table_ddl": Oracle 而щ읆 硫뷀??곗씠?곕? 議고쉶?쒕떎.
+    # action="get_table_ddl": Oracle 테이블 컬럼 메타데이터를 조회한다.
     def _mig__get_table_ddl(self, table_name: Any, schema: Any = None) -> dict[str, Any]:
         clean_table = str(table_name or "").strip().upper()
         clean_schema = str(schema or "").strip().upper()
@@ -776,7 +776,7 @@ class BatchAgentCommandTool(Component):
             "columns": columns,
         }
 
-    # action="generate_mig_sql": MIG_SQL???앹꽦?댁꽌 梨꾪똿 ?묐떟?쇰줈 諛섑솚?쒕떎.
+    # action="generate_mig_sql": MIG_SQL을 생성한다.
     def _mig__generate_mig_sql(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
@@ -798,7 +798,6 @@ class BatchAgentCommandTool(Component):
                     "mig_sql": existing_mig_sql,
                 }
             return {"ok": False, "map_id": map_id, "error": "USER_EDITED=Y but MIG_SQL is empty"}
-        # PRIOR_MAP_ID? 媛숈? target ?곗꽑?쒖쐞 議곌굔??癒쇱? ?뺤씤?쒕떎.
         dep = self._mig__check_dependencies(job)
         if not dep["ok"]:
             return {"ok": False, "map_id": map_id, "status": dep["status"], "message": dep["message"]}
@@ -833,7 +832,7 @@ class BatchAgentCommandTool(Component):
             "mig_sql": mig_sql,
         }
 
-    # action="generate_verify_sql": VERIFY_SQL???앹꽦?댁꽌 梨꾪똿 ?묐떟?쇰줈 諛섑솚?쒕떎.
+    # action="generate_verify_sql": VERIFY_SQL을 생성한다.
     def _mig__generate_verify_sql(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
@@ -892,7 +891,7 @@ class BatchAgentCommandTool(Component):
             "verify_sql": verify_sql,
         }
 
-    # action="preview_mig_prompt" / "preview_verify_prompt": 移섑솚??prompt瑜?諛섑솚?쒕떎.
+    # action="preview_*_prompt": LLM 호출 없이 최종 프롬프트를 확인한다.
     def _mig__preview_sql_prompt(self, map_id: Any, command: dict[str, Any], prompt_kind: str) -> dict[str, Any]:
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
@@ -939,7 +938,7 @@ class BatchAgentCommandTool(Component):
             "llm_called": False,
         }
 
-    # action="reset": ?ъ떎?됱쓣 ?꾪빐 ?곹깭 媛믪쓣 珥덇린?뷀븳??
+    # action="reset": 재실행을 위해 상태값을 초기화한다.
     def _mig__reset(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
@@ -968,7 +967,7 @@ class BatchAgentCommandTool(Component):
         self._mig__write_log(map_id, "RESET", "INFO", "RESET", "PASS", "Job reset. SQL values preserved.")
         return {"ok": rowcount > 0, "map_id": map_id, "updated_rows": rowcount}
 
-    # action="save_user_sql": ?ъ슜?먭? ?섏젙??SQL????ν븯怨?USER_EDITED=Y濡??쒖떆?쒕떎.
+    # action="save_user_sql": 사용자가 수정한 SQL을 저장한다.
     def _mig__save_user_sql(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
@@ -1005,7 +1004,7 @@ class BatchAgentCommandTool(Component):
         self._mig__write_log(map_id, "SAVE_USER_SQL", "INFO", "USER_SQL", "PASS", "User SQL saved", generate_sql=str(mig_sql))
         return {"ok": rowcount > 0, "map_id": map_id, "updated_rows": rowcount}
 
-    # action="analyze_failure": 理쒖떊 ?ㅽ뙣 濡쒓렇? ???SQL??議고쉶?쒕떎.
+    # action="analyze_failure": 최근 실패 로그와 저장 SQL을 조회한다.
     def _mig__analyze_failure(self, map_id: Any) -> dict[str, Any]:
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
@@ -1078,15 +1077,13 @@ class BatchAgentCommandTool(Component):
             "recent_logs": recent_logs,
         }
 
-    # action="run_migration_job": SQL ?앹꽦, ?ㅽ뻾, 寃利앷퉴吏 ?꾩껜 ?ъ씠?댁쓣 ?섑뻾?쒕떎.
+    # action="run_migration_job": SQL 생성, 실행, 검증까지 전체 마이그레이션 사이클을 수행한다.
     def _mig__run_migration_job(self, map_id: Any, command: dict[str, Any]) -> dict[str, Any]:
 
-        # =====_run_migration_job? ?ъ슜?먭? 梨꾪똿?쇰줈 ?몄텧???섎룄 ?덇린 ?뚮Ц???ъ슜?먭? ?붿껌??job???ㅽ뻾 媛?ν븳吏 寃利앺븳??=====
         if map_id is None or str(map_id).strip() == "":
             raise ValueError("map_id is required")
         map_id = int(map_id)
 
-        # started??理쒖쥌 PASS/FAIL ?곹깭 ?????elapsed_seconds 怨꾩궛???ъ슜?쒕떎.
         started = time.perf_counter()
         max_attempts = max(1, int(command.get("max_attempts") or self.default_max_attempts or 1))
 
@@ -1094,11 +1091,9 @@ class BatchAgentCommandTool(Component):
         if not job:
             return {"ok": False, "map_id": map_id, "error": "job not found"}
 
-        # USE_YN??Y媛 ?꾨땲硫??ㅽ뻾 ??곸씠 ?꾨땲誘濡??ㅼ젣 SQL ?앹꽦/?ㅽ뻾?쇰줈 ?섏뼱媛吏 ?딅뒗??
         if str(job.get("use_yn") or "").upper() != "Y":
             return {"ok": False, "map_id": map_id, "status": "SKIP", "error": "USE_YN is not Y"}
 
-        # ?대? ?꾨즺?섏뿀嫄곕굹 ?ㅽ뙣 ?곹깭媛 ?⑥븘 ?덈뒗 ?묒뾽? run_migration_job?먯꽌 諛붾줈 ?ъ떎?됲븯吏 ?딅뒗??
         current_status = str(job.get("status") or "").strip().upper()
         if current_status == "PASS":
             return {"ok": True, "map_id": map_id, "status": "PASS", "message": "Job already passed"}
@@ -1116,27 +1111,20 @@ class BatchAgentCommandTool(Component):
             self._mig__write_log(map_id, "DEPENDENCY", "WARN", "DEP_CHECK", final_status, dep["message"])
             return {"ok": True, "map_id": map_id, "status": final_status, "message": dep["message"]}
 
-        # steps?먮뒗 SQL ?앹꽦/?ㅽ뻾/寃利?媛??④퀎???붿빟 寃곌낵瑜??쒖꽌?濡??꾩쟻?쒕떎.
         steps: list[dict[str, Any]] = []
 
-        # 理쒖쥌 PASS/FAIL ?쒖젏??DB????ν븷 留덉?留?MIG_SQL/VERIFY_SQL 媛믪쓣 ?ㅺ퀬 媛꾨떎.
         last_mig_sql = str(job.get("mig_sql") or "")
         last_verify_sql = str(job.get("verify_sql") or "")
 
         try:
-            # ?ㅽ뻾 吏곸쟾???묒뾽???ㅼ떆 ?쎌뼱 ?ъ슜???섏젙 SQL?대굹 理쒖떊 ?곹깭瑜?諛섏쁺?쒕떎.
             job = self._mig__load_job(map_id) or job
             user_edited = str(job.get("user_edited") or "").upper() == "Y"
 
-            # last_failure???ㅼ쓬 retry prompt???ｌ쓣 ?먮윭? ?ㅽ뙣 status瑜?蹂닿??쒕떎.
             last_failure: dict[str, Any] = {}
-            # mig_executed????踰?MIG_SQL ?ㅽ뻾???깃났?섎㈃ 媛숈? run ?덉뿉???ㅼ떆 insert?섏? ?딅룄濡??쒕떎.
             mig_executed = False
-            # verify_sql_executed??VERIFY_SQL 寃利앹씠 ?깃났???ㅼ뿉??寃利??④퀎瑜??ㅼ떆 ?吏 ?딅룄濡??쒖떆?쒕떎.
             verify_sql_executed = False
             last_retry_count = 0
 
-            # attempt??1遺???쒖옉?섍퀬, retry_count??DB/濡쒓렇 湲곗??쇰줈 0遺???쒖옉?쒕떎.
             for attempt in range(1, max_attempts + 1):
                 retry_count = attempt - 1
                 last_retry_count = retry_count
@@ -1144,9 +1132,7 @@ class BatchAgentCommandTool(Component):
                 job = self._mig__load_job(map_id) or job
                 user_edited = str(job.get("user_edited") or "").upper() == "Y"
 
-                # MIG_SQL ?ㅽ뻾? ??踰??깃났?섎㈃ 媛숈? run ?덉뿉???ㅼ떆 insert?섏? ?딅뒗??
                 if not mig_executed:
-                    # USER_EDITED=Y?대㈃ LLM ?앹꽦 ???DB????λ맂 MIG_SQL??洹몃?濡??ъ슜?쒕떎.
                     if user_edited:
                         mig_sql = str(job.get("mig_sql") or "").strip()
                         if not mig_sql:
@@ -1154,7 +1140,6 @@ class BatchAgentCommandTool(Component):
                         last_mig_sql = mig_sql
                         steps.append({"step": "generate_mig_sql", "attempt": attempt, "status": "SKIPPED_USER_EDITED"})
                     else:
-                        # MIG_SQL ?앹꽦 ?⑥닔?먮뒗 ?댁쟾 ?ㅽ뙣 ?먮윭? SQL???섍꺼 retry prompt??諛섏쁺?쒕떎.
                         mig_command = {
                             "retry_count": retry_count,
                             "last_error": last_failure.get("error", ""),
@@ -1162,7 +1147,6 @@ class BatchAgentCommandTool(Component):
                         }
                         mig_result = self._mig__generate_mig_sql(map_id, mig_command)
                         steps.append({"step": "generate_mig_sql", "attempt": attempt, **self._mig__summary_result(mig_result)})
-                        # MIG_SQL ?앹꽦 ?ㅽ뙣??FAIL-INSERT ?꾨낫濡?湲곕줉?섍퀬 ?⑥? attempt媛 ?덉쑝硫??ъ떆?꾪븳??
                         if not mig_result.get("ok"):
                             last_failure = {"status": "FAIL-INSERT", "error": mig_result.get("error") or "MIG_SQL generation failed"}
                             self._mig__write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "GENERATE_MIG_SQL", "FAIL-INSERT", str(last_failure["error"])[:3900], retry_count)
@@ -1170,7 +1154,6 @@ class BatchAgentCommandTool(Component):
                                 continue
                             break
 
-                        # ?앹꽦???깃났??MIG_SQL? 理쒖쥌 ????꾨낫濡?蹂닿??섍퀬 ?앹꽦 濡쒓렇瑜??④릿??
                         last_mig_sql = str(mig_result.get("mig_sql") or "")
                         self._mig__write_log(
                             map_id,
@@ -1184,7 +1167,6 @@ class BatchAgentCommandTool(Component):
                         )
 
                     try:
-                        # ?ㅽ뻾 ?⑥닔??job dict ?덉쓽 mig_sql???쎌쑝誘濡?理쒖떊 SQL??蹂묓빀?댁꽌 ?섍릿??
                         job = {**job, "mig_sql": last_mig_sql}
                         mig_sql = self._mig__sanitize_migration_sql(str(job.get("mig_sql") or ""))
                         if str(job.get("trunc_yn") or "").upper() == "Y":
@@ -1204,7 +1186,6 @@ class BatchAgentCommandTool(Component):
                         steps.append({"step": "execute_mig_sql", "attempt": attempt, **self._mig__summary_result(mig_exec_result)})
                         mig_executed = True
                     except Exception as exc:
-                        # INSERT ?ㅽ뻾 ?ㅽ뙣???ㅼ쓬 attempt?먯꽌 MIG_SQL???ъ깮?깊븷 ???덈룄濡?last_failure???ｋ뒗??
                         last_failure = {"status": "FAIL-INSERT", "error": str(exc)}
                         steps.append({"step": "execute_mig_sql", "attempt": attempt, "ok": False, **last_failure})
                         self._mig__write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "SQL_EXEC", "FAIL-INSERT", str(exc)[:3900], retry_count, str(job.get("mig_sql") or ""))
@@ -1212,19 +1193,15 @@ class BatchAgentCommandTool(Component):
                             continue
                         break
 
-                # VERIFY_SQL 寃利앸룄 ?④퀎 ?꾨즺 ?щ?瑜?蹂?섎줈 ?먯뼱 MIG_SQL/BIND_SQL ?먮쫫怨?留욎텣??
                 if not verify_sql_executed:
                     job = self._mig__load_job(map_id) or job
                     user_edited = str(job.get("user_edited") or "").upper() == "Y"
-                    # VERIFY_SQL? MIG_SQL ?ㅽ뻾 ?댄썑??理쒖떊 DB row瑜??ㅼ떆 ?쎌? ??寃곗젙?쒕떎.
                     verify_sql = str(job.get("verify_sql") or "").strip()
 
-                    # ?ъ슜???섏젙 VERIFY_SQL???덉쑝硫?LLM ?앹꽦??嫄대꼫?곌퀬 ??λ맂 SQL???ъ슜?쒕떎.
                     if user_edited and verify_sql:
                         last_verify_sql = verify_sql
                         steps.append({"step": "generate_verify_sql", "attempt": attempt, "status": "SKIPPED_USER_EDITED"})
                     else:
-                        # VERIFY_SQL ?앹꽦???댁쟾 ?ㅽ뙣 ?뺣낫瑜?媛숈씠 ?섍꺼 retry prompt ?덉쭏???믪씤??
                         verify_command = {
                             "retry_count": retry_count,
                             "last_error": last_failure.get("error", ""),
@@ -1233,7 +1210,6 @@ class BatchAgentCommandTool(Component):
                         verify_result = self._mig__generate_verify_sql(map_id, verify_command)
                         steps.append({"step": "generate_verify_sql", "attempt": attempt, **self._mig__summary_result(verify_result)})
 
-                        # VERIFY_SQL ?앹꽦 ?ㅽ뙣??寃利??ㅽ뙣 ?④퀎濡?蹂닿퀬 ?⑥? attempt媛 ?덉쑝硫??ъ떆?꾪븳??
                         if not verify_result.get("ok"):
                             last_failure = {"status": "FAIL-TEST", "error": verify_result.get("error") or "VERIFY_SQL generation failed"}
                             self._mig__write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "GENERATE_VERIFY_SQL", "FAIL-TEST", str(last_failure["error"])[:3900], retry_count)
@@ -1241,7 +1217,6 @@ class BatchAgentCommandTool(Component):
                                 continue
                             break
 
-                        # ?앹꽦???깃났??VERIFY_SQL? 理쒖쥌 ????꾨낫濡?蹂닿??섍퀬 ?앹꽦 濡쒓렇瑜??④릿??
                         last_verify_sql = str(verify_result.get("verify_sql") or "")
                         self._mig__write_log(
                             map_id,
@@ -1255,7 +1230,6 @@ class BatchAgentCommandTool(Component):
                         )
 
                     try:
-                        # 寃利??ㅽ뻾 ?⑥닔??job dict ?덉쓽 verify_sql???쎌쑝誘濡?理쒖떊 SQL??蹂묓빀?댁꽌 ?섍릿??
                         job = {**job, "verify_sql": last_verify_sql}
                         verify_sql = self._mig__sanitize_verify_sql(str(job.get("verify_sql") or ""))
                         verify_ok, verify_message, rows = self._mig__execute_verify_sql_with_rows(verify_sql)
@@ -1269,7 +1243,6 @@ class BatchAgentCommandTool(Component):
                         }
                         steps.append({"step": "execute_verify_sql", "attempt": attempt, **self._mig__summary_result(verify_exec_result)})
 
-                        # 寃利앹씠 ?듦낵?섎㈃ 理쒖쥌 SQL怨?PASS ?곹깭瑜???ν븯怨?利됱떆 ?깃났 諛섑솚?쒕떎.
                         if verify_exec_result.get("ok"):
                             verify_sql_executed = True
                             elapsed = int(time.perf_counter() - started)
@@ -1286,14 +1259,12 @@ class BatchAgentCommandTool(Component):
                                 "steps": steps,
                             }
 
-                        # 寃利?寃곌낵媛 ok=False?대㈃ FAIL-TEST ?꾨낫濡?湲곕줉?섍퀬 ?⑥? attempt媛 ?덉쑝硫??ъ떆?꾪븳??
                         last_failure = {"status": "FAIL-TEST", "error": verify_exec_result.get("message") or "Verification failed"}
                         self._mig__write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "VERIFY", "FAIL-TEST", str(last_failure["error"])[:3900], retry_count, verify_exec_result.get("verify_sql"))
                         if attempt < max_attempts:
                             continue
                         break
                     except Exception as exc:
-                        # 寃利?SQL ?ㅽ뻾 ?먯껜媛 ?덉쇅瑜??대룄 FAIL-TEST ?꾨낫濡?湲곕줉?쒕떎.
                         last_failure = {"status": "FAIL-TEST", "error": str(exc)}
                         steps.append({"step": "execute_verify_sql", "attempt": attempt, "ok": False, **last_failure})
                         self._mig__write_log(map_id, "ROW_ERROR", "WARN", "RETRY" if retry_count > 0 else "VERIFY", "FAIL-TEST", str(exc)[:3900], retry_count, str(job.get("verify_sql") or ""))
@@ -1301,7 +1272,6 @@ class BatchAgentCommandTool(Component):
                             continue
                         break
 
-            # 紐⑤뱺 attempt媛 ?앸궗?붾뜲 PASS媛 ?꾨땲硫?留덉?留??ㅽ뙣 status濡?理쒖쥌 ?곹깭瑜???ν븳??
             final_status = str(last_failure.get("status") or "FAIL")
             elapsed = int(time.perf_counter() - started)
 
@@ -1327,7 +1297,6 @@ class BatchAgentCommandTool(Component):
                 "steps": steps,
             }
         except Exception as exc:
-            # ?덉긽?섏? 紐삵븳 ?덉쇅??理쒖쥌 FAIL濡???ν븯怨? 留덉?留?SQL???덉쑝硫?媛숈씠 ?④릿??
             elapsed = int(time.perf_counter() - started)
             self._mig__save_final_sql(map_id, last_mig_sql, last_verify_sql)
             self._mig__update_job_status(map_id, "FAIL", elapsed, int(job.get("retry_count") or 0))
@@ -1342,9 +1311,9 @@ class BatchAgentCommandTool(Component):
             }
 
     # ======================================================================
-    # 怨듯넻 肄붾뱶
+    # 공통 코드
     # ======================================================================
-    # command_json??dict濡?蹂?섑븯怨?action/map_id 媛숈? ?ㅽ뻾 ?뚮씪誘명꽣瑜??댁꽍?쒕떎.
+    # command_json을 dict로 파싱한다.
     def _mig__parse_command(self) -> dict[str, Any]:
         raw = self.command_json
         if isinstance(raw, dict):
@@ -1354,7 +1323,7 @@ class BatchAgentCommandTool(Component):
             raise ValueError("command_json is required")
         return json.loads(text)
 
-    # DB ?낅젰媛믪쓣 SQLDatabase?먯꽌 ?ъ슜??Oracle connection string?쇰줈 留뚮뱺??
+    # DB 입력값으로 Oracle SQLAlchemy connection string을 만든다.
     def _mig__connection_string(self) -> str:
         host = str(self.db_host or "").strip()
         port = int(self.db_port or 1521)
@@ -1369,7 +1338,7 @@ class BatchAgentCommandTool(Component):
             raise ValueError("Username is required")
         return f"oracle+oracledb://{quote_plus(username)}:{quote_plus(password)}@{host}:{port}/{service_name}"
 
-    # 媛숈? DB ?묒냽 ?뺣낫??_db_cache????ν빐?먭퀬 ?ъ궗?⑺븳??
+    # 같은 DB 접속 정보는 SQLDatabase 인스턴스를 캐시해 재사용한다.
     def _mig__get_db(self):
         self._mig__ensure_runtime_dependencies()
         from langchain_community.utilities import SQLDatabase
@@ -1386,7 +1355,7 @@ class BatchAgentCommandTool(Component):
         self.db = self._db_cache[cache_key]
         return self.db
 
-    # DB ?곌껐???꾩슂???고????⑦궎吏媛 import 媛?ν븳吏 ?뺤씤?쒕떎.
+    # DB 연결에 필요한 런타임 패키지를 확인한다.
     def _mig__ensure_runtime_dependencies(self) -> None:
         missing_packages: list[str] = []
         try:
@@ -1416,7 +1385,6 @@ class BatchAgentCommandTool(Component):
     def _mig__pip_install(self, package: str) -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
-    # LLM API濡?JSON POST ?붿껌??蹂대궡怨??묐떟 JSON??dict濡?諛섑솚?쒕떎.
     def _mig__post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
         req_headers = {"Content-Type": "application/json", **headers}
@@ -1430,7 +1398,6 @@ class BatchAgentCommandTool(Component):
             detail = exc.read().decode("utf-8", errors="ignore")[:1000]
             raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
 
-    # SQLDatabase.run 寃곌낵瑜?Langflow ?묐떟?먯꽌 蹂닿린 醫뗭? list[dict] ?뺥깭濡?留욎텣??
     def _mig__normalize_query_rows(self, raw: Any) -> list[dict[str, Any]]:
         if raw is None or raw == "":
             return []
@@ -1453,7 +1420,6 @@ class BatchAgentCommandTool(Component):
             return self._mig__normalize_query_rows(parsed)
         return [{"value": raw}]
 
-    # SQLDatabase??raw connection???닿퀬 ?ъ슜 ??諛섎뱶???ル뒗??
     @contextmanager
     def _mig__connect(self):
         db = self._mig__get_db()
@@ -1466,7 +1432,6 @@ class BatchAgentCommandTool(Component):
         finally:
             conn.close()
 
-    # job/detail/command 媛믪쓣 prompt template placeholder??移섑솚?쒕떎.
     def _mig__render_sql_prompt(
         self,
         template: str,
@@ -1501,7 +1466,6 @@ class BatchAgentCommandTool(Component):
             rendered = rendered.replace("{" + key + "}", str(value))
         return rendered
 
-    # ?ъ떆?꾪븷 ???댁쟾 ?먮윭? SQL??prompt???ｌ쓣 臾몄옄?대줈 留뚮뱺??
     def _mig__build_retry_context(self, last_error: str, last_sql: str, retry_count: Any = None) -> str:
         if not last_error and not last_sql:
             return ""
@@ -1518,7 +1482,6 @@ class BatchAgentCommandTool(Component):
             "When applying the source filter condition, add WHERE only if the condition text does not already start with WHERE."
         )
 
-    # NEXT_MIG_INFO_DTL??而щ읆 留ㅽ븨 紐⑸줉??prompt???ｌ쓣 臾몄옄?대줈 留뚮뱺??
     def _mig__format_mapping_info(self, details: list[dict[str, Any]]) -> str:
         lines = []
         for detail in details:
@@ -1530,7 +1493,6 @@ class BatchAgentCommandTool(Component):
                 lines.append(f"  - {fr_col} -> <skip target column; source expression may be used only as part of another mapped expression>")
         return "\n".join(lines) if lines else "  - No mapping details"
 
-    # FROM/TO ?뚯씠釉?而щ읆 ?뺣낫瑜?議고쉶?댁꽌 prompt??DDL ?뺣낫 釉붾줉??留뚮뱺??
     def _mig__build_ddl_info_block(self, from_table: str, to_table: str) -> str:
         blocks = ["[DDL information]"]
         for label, table_name in [("Source", from_table), ("Target", to_table)]:
@@ -1541,11 +1503,9 @@ class BatchAgentCommandTool(Component):
             blocks.append(f"- {label} {table_name}:\n{columns}")
         return "\n".join(blocks)
 
-    # FR_TABLE怨?MAP_TYPE??湲곗??쇰줈 prompt???ㅼ뼱媛?source context瑜?留뚮뱺??
     def _mig__build_source_context(self, job: dict[str, Any]) -> dict[str, str]:
         map_type = str(job.get("map_type") or "").strip().upper()
         raw_source = str(job.get("fr_table") or "").strip()
-        # source_schema媛 ?덉쑝硫?FR_TABLE ?덉쓽 臾쇰━ source table ?욎뿉 schema瑜?遺숈씤??
         qualified_source = raw_source
         source_schema = str(self.source_schema or "").strip().upper()
         if source_schema:
@@ -1586,7 +1546,6 @@ class BatchAgentCommandTool(Component):
             "complex_source_note": "",
         }
 
-    # ?⑥씪 ?뚯씠釉붿씠硫?而щ읆 硫뷀??곗씠?곕? 議고쉶?섍퀬, 蹂듯빀 source硫??덈궡 臾멸뎄瑜?諛섑솚?쒕떎.
     def _mig__table_columns_for_prompt(self, table_name: str) -> str:
         clean = str(table_name or "").strip()
         if not clean or any(token in clean.upper() for token in [" JOIN ", " SELECT ", " WITH "]):
@@ -1606,7 +1565,6 @@ class BatchAgentCommandTool(Component):
             for col in columns[:200]
         )
 
-    # ?꾩옱 LLM ?ㅼ젙?쇰줈 chat/completions瑜??몄텧?섍퀬 message content瑜?諛섑솚?쒕떎.
     def _mig__call_llm(self, prompt: str) -> str:
         api_key = str(self.llm_api_key or "").strip()
         model = str(self.llm_model or "").strip()
@@ -1628,7 +1586,6 @@ class BatchAgentCommandTool(Component):
         data = self._mig__post_json(url, payload, {"Authorization": f"Bearer {api_key}"})
         return str(data["choices"][0]["message"].get("content", ""))
 
-    # LLM ?묐떟?먯꽌 SQL 肄붾뱶釉붾줉 ?먮뒗 JSON key 媛믪쓣 爰쇰궡怨?湲곕? SQL 醫낅쪟瑜?寃利앺븳??
     def _mig__extract_sql(self, value: Any, expected: str, key: str | None = None) -> str:
         text = str(value or "").strip()
         if not text:
@@ -1646,7 +1603,6 @@ class BatchAgentCommandTool(Component):
             raise ValueError(f"Expected {expected.upper()} SQL but got: {first_word or text[:40]}")
         return text
 
-    # LLM ?묐떟 臾몄옄?댁뿉??JSON object瑜??뚯떛?쒕떎.
     def _mig__parse_llm_json(self, text: str) -> dict[str, Any]:
         clean = str(text or "").strip()
         fence = re.search(r"```(?:json)?\s*(.*?)```", clean, flags=re.I | re.S)
@@ -1663,7 +1619,6 @@ class BatchAgentCommandTool(Component):
             raise ValueError("LLM JSON response must be an object")
         return parsed
 
-    # MIG_SQL???⑥씪 INSERT?몄? ?뺤씤?섍퀬 ?꾪뿕??DML/DDL ?ㅼ썙?쒕? 留됰뒗??
     def _mig__sanitize_migration_sql(self, sql: str) -> str:
         cleaned = str(sql or "").strip().rstrip(";").strip()
         if not cleaned:
@@ -1681,7 +1636,6 @@ class BatchAgentCommandTool(Component):
             raise ValueError("MIG_SQL must start with INSERT")
         return statement
 
-    # VERIFY_SQL???⑥씪 SELECT/WITH?몄? ?뺤씤?섍퀬 蹂寃?SQL ?ㅼ썙?쒕? 留됰뒗??
     def _mig__sanitize_verify_sql(self, sql: str) -> str:
         cleaned = str(sql or "").strip().rstrip(";").strip()
         if not cleaned:
@@ -1700,7 +1654,7 @@ class BatchAgentCommandTool(Component):
             raise ValueError("VERIFY_SQL must start with SELECT or WITH")
         return statement
 
-    # NEXT_MIG_INFO ?④굔 議고쉶 寃곌낵瑜?Python dict濡?蹂?섑븳??
+    # NEXT_MIG_INFO에서 map_id에 해당하는 작업 row를 조회한다.
     def _mig__load_job(self, map_id: int) -> dict[str, Any] | None:
         map_table = self._mig__qualify_table("NEXT_MIG_INFO", self.system_schema)
         with self._mig__connect() as conn:
@@ -1740,7 +1694,7 @@ class BatchAgentCommandTool(Component):
             "upd_ts": self._mig__to_text(row[17]),
         }
 
-    # NEXT_MIG_INFO_DTL??FR_COL -> TO_COL 紐⑸줉??MAP_DTL ?쒖꽌濡?媛?몄삩??
+    # NEXT_MIG_INFO_DTL에서 컬럼 매핑 목록을 조회한다.
     def _mig__load_details(self, map_id: int) -> list[dict[str, Any]]:
         detail_table = self._mig__qualify_table("NEXT_MIG_INFO_DTL", self.system_schema)
         with self._mig__connect() as conn:
@@ -1760,7 +1714,6 @@ class BatchAgentCommandTool(Component):
             for r in rows
         ]
 
-    # PRIOR_MAP_ID? 媛숈? TO_TABLE ???곗꽑?쒖쐞瑜??뺤씤?댁꽌 ?ㅽ뻾 媛???щ?瑜?諛섑솚?쒕떎.
     def _mig__check_dependencies(self, job: dict[str, Any]) -> dict[str, Any]:
         prior_map_id = job.get("prior_map_id")
         try:
@@ -1786,7 +1739,6 @@ class BatchAgentCommandTool(Component):
 
         return {"ok": True, "message": "Dependencies passed"}
 
-    # 媛숈? TO_TABLE ?덉뿉?쒕뒗 PRIORITY ?レ옄媛 ???묒? ?묒뾽??癒쇱? PASS?ъ빞 ?쒕떎.
     def _mig__check_same_target_priority_dependencies(self, job: dict[str, Any]) -> dict[str, Any]:
         to_table = str(job.get("to_table") or "").strip()
         priority = job.get("priority")
@@ -1833,7 +1785,6 @@ class BatchAgentCommandTool(Component):
                 }
         return {"ok": True, "message": "Same-target priority dependencies passed"}
 
-    # 理쒖쥌 PASS/FAIL ?쒖젏???⑥? MIG_SQL/VERIFY_SQL??NEXT_MIG_INFO????ν븳??
     def _mig__save_final_sql(self, map_id: int, mig_sql: str, verify_sql: str) -> None:
         assignments = []
         params: list[Any] = []
@@ -1863,7 +1814,6 @@ class BatchAgentCommandTool(Component):
             )
             conn.commit()
 
-    # steps???ｌ쓣 ???덈룄濡?action 寃곌낵?먯꽌 ?듭떖 ?꾨뱶留?異붾┛??
     def _mig__summary_result(self, result: dict[str, Any]) -> dict[str, Any]:
         summary = {
             "ok": bool(result.get("ok")),
@@ -1874,7 +1824,6 @@ class BatchAgentCommandTool(Component):
                 summary[key] = result.get(key)
         return summary
 
-    # TRUNC_YN=Y???묒뾽?먯꽌 target table??鍮꾩슫??
     def _mig__truncate_target(self, job: dict[str, Any]) -> None:
         target = self._mig__qualify_table(job["to_table"], self.target_schema)
         with self._mig__connect() as conn:
@@ -1882,7 +1831,7 @@ class BatchAgentCommandTool(Component):
             cur.execute(f"TRUNCATE TABLE {target}")
             conn.commit()
 
-    # MIG_SQL script瑜?statement ?⑥쐞濡??ㅽ뻾?섍퀬 ?꾩껜 泥섎━ row ?섎? ?⑹궛?쒕떎.
+    # MIG_SQL script를 statement 단위로 실행하고 처리 row 수를 합산한다.
     def _mig__execute_sql_script(self, sql_script: str) -> int:
         statements = self._mig__split_sql_script(sql_script)
         total_rowcount = 0
@@ -1897,10 +1846,8 @@ class BatchAgentCommandTool(Component):
             conn.commit()
         return total_rowcount
 
-    # VERIFY_SQL ?ㅽ뻾 寃곌낵 row??紐⑤뱺 媛믪씠 0?몄? ?뺤씤?쒕떎.
+    # VERIFY_SQL 결과의 모든 값이 0인지 확인한다.
     def _mig__execute_verify_sql_with_rows(self, verify_sql: str) -> tuple[bool, str, list[dict[str, Any]]]:
-        # VERIFY_SQL? ?レ옄 李⑥씠媛믪쓣 諛섑솚?섎뒗 SQL?대씪怨?蹂닿퀬 寃利앺븳??
-        # 諛섑솚??紐⑤뱺 媛믪씠 0?댁뼱??PASS?닿퀬, 0???꾨땲嫄곕굹 鍮?媛믪씠硫??ㅽ뙣濡?蹂몃떎.
         statements = self._mig__split_sql_script(verify_sql)
         if not statements:
             return False, "verify_sql is empty", []
@@ -1935,7 +1882,7 @@ class BatchAgentCommandTool(Component):
                     return False, f"Mismatch found: {row}", result_rows
         return True, "All Verification Passed", result_rows
 
-    # 理쒖쥌 ?곹깭, elapsed_seconds, retry_count, batch_count瑜?NEXT_MIG_INFO????ν븳??
+    # 최종 상태, 소요시간, retry count, batch count를 NEXT_MIG_INFO에 저장한다.
     def _mig__update_job_status(self, map_id: int, status: str, elapsed_seconds: int, retry_count: int) -> None:
         map_table = self._mig__qualify_table("NEXT_MIG_INFO", self.system_schema)
         with self._mig__connect() as conn:
@@ -1954,7 +1901,7 @@ class BatchAgentCommandTool(Component):
             )
             conn.commit()
 
-    # NEXT_MIG_LOG insert 而щ읆 ?쒖꽌???댁쁺 ?뚯씠釉?湲곗???留욎떠 ?좎??쒕떎.
+    # 마이그레이션 단계 로그를 NEXT_MIG_LOG에 저장한다.
     def _mig__write_log(
         self,
         map_id: int,
@@ -1987,7 +1934,6 @@ class BatchAgentCommandTool(Component):
         except Exception:
             pass
 
-    # ?곗샂???덉쓽 ?몃?肄쒕줎? ?좎??섎㈃??SQL script瑜?statement 紐⑸줉?쇰줈 ?섎늿??
     def _mig__split_sql_script(self, sql_script: str) -> list[str]:
         text = str(sql_script or "")
         statements: list[str] = []
@@ -2011,7 +1957,6 @@ class BatchAgentCommandTool(Component):
             statements.append(tail)
         return statements
 
-    # command JSON?먯꽌 諛쏆? 臾몄옄???レ옄 媛믪쓣 bool濡??댁꽍?쒕떎.
     def _mig__as_bool(self, value: Any) -> bool:
         if isinstance(value, bool):
             return value
@@ -2019,7 +1964,6 @@ class BatchAgentCommandTool(Component):
             return False
         return str(value).strip().lower() in {"1", "true", "y", "yes", "on"}
 
-    # schema ?낅젰媛믪씠 ?덉쑝硫??뚯씠釉붾챸 ?욎뿉 schema瑜?遺숈씠怨?identifier瑜?寃利앺븳??
     def _mig__qualify_table(self, table_name: str, schema: str | None) -> str:
         clean = str(table_name or "").strip()
         clean_schema = str(schema or "").strip().upper()
@@ -2031,7 +1975,6 @@ class BatchAgentCommandTool(Component):
             raise ValueError(f"Invalid schema: {clean_schema}")
         return f"{clean_schema}.{clean}"
 
-    # DB?먯꽌 媛?몄삩 CLOB/bytes/None 媛믪쓣 ?쇰컲 臾몄옄?대줈 蹂?섑븳??
     def _mig__to_text(self, value: Any) -> str:
         if value is None:
             return ""
@@ -2052,8 +1995,6 @@ class BatchAgentCommandTool(Component):
             bind_sql = command.get("bind_sql")
             bind_set = command.get("bind_set")
 
-            # command瑜?吏곸젒 action???곌껐?섎뒗寃?醫뗭?吏 ?꾨땲硫??뚮씪誘명꽣瑜??뺥솗?섍쾶 遺꾨━?댁꽌 諛쏅뒗寃?醫뗭?吏 怨좊?以? 
-            # ?쇰떒 command JSON??洹몃?濡?諛쏅뒗嫄몃줈. db migration?먯꽌??command瑜??꾨떖 諛쏅뒗 action??留롮???以꾩뿬???섎굹,,
             if action == "test_connection":
                 result = self._sql__test_connection()
             elif action == "status":
@@ -2086,7 +2027,7 @@ class BatchAgentCommandTool(Component):
             return Data(data=result)
 
 
-    # action="test_connection": DB? LLM ?곌껐 ?곹깭瑜??뺤씤?쒕떎.
+    # action="test_connection": DB와 LLM 연결 상태를 확인한다.
     def _sql__test_connection(self) -> dict[str, Any]:
         try:
             result = self._sql__get_db().run("SELECT 1 AS OK FROM DUAL", include_columns=True)
@@ -2127,17 +2068,16 @@ class BatchAgentCommandTool(Component):
         }
 
 
-    # action="status": space_nm/sql_id 湲곗? SQL Conversion ?묒뾽 ?곹깭瑜?議고쉶?쒕떎.
+    # action="status": 작업 상태를 조회한다.
     def _sql__status(self, space_nm: Any, sql_id: Any) -> dict[str, Any]:
         job = self._sql__load_job(space_nm, sql_id)
         return {"ok": bool(job), "job": job, "error": "" if job else "job not found"}
 
 
-    # action="list_pending": STATUS_CONVERSION??NULL??SQL Conversion ?묒뾽 紐⑸줉??議고쉶?쒕떎.
+    # action="list_pending": 실행 가능한 대기 작업을 조회한다.
     def _sql__list_pending(self, limit: Any) -> dict[str, Any]:
         safe_limit = max(1, min(int(limit or 20), 100))
         table = self._sql__qualify_table("NEXT_SQL_INFO", self.system_schema)
-        # fr_sql 媛숈? CLOB 而щ읆? DBMS_LOB.SUBSTR濡?誘몃━ ?섎씪??媛?몄삤嫄곕굹 length留?媛?몄샂
         sql = f"""
                 SELECT *
                 FROM (
@@ -2172,11 +2112,10 @@ class BatchAgentCommandTool(Component):
         ]
         return {"ok": True, "count": len(jobs), "jobs": jobs}
 
-    # action="get_table_ddl" ???꾨＼?ы듃???ｌ쓣吏 怨좊?以?, ?꾩슂?섎㈃ migration_tool?먯꽌 媛?몄???render_*_prompt???ｌ뼱二쇰㈃ ?좊벏
+    # action="get_table_ddl": Oracle 테이블 컬럼 메타데이터를 조회한다.
 
-    # action="generate_to_sql": TO_SQL???앹꽦?댁꽌 梨꾪똿 ?묐떟?쇰줈 諛섑솚?쒕떎. DB?먮뒗 ??ν븯吏 ?딅뒗??
+    # action="generate_to_sql": TO_SQL을 생성한다.
     def _sql__generate_to_sql(self, space_nm: Any, sql_id: Any, last_error: Any = None) -> dict[str, Any]:
-        # map id??sql id 議댁옱 ?좊Т???ㅻⅨ ?⑥닔?먯꽌???쒖슜?좉굅??
         if not str(space_nm or "").strip() or not str(sql_id or "").strip():
             raise ValueError("space_nm and sql_id are required")
         job = self._sql__load_job(space_nm, sql_id)
@@ -2198,7 +2137,8 @@ class BatchAgentCommandTool(Component):
                 }
             return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "USER_EDITED=Y but TO_SQL is empty"}
 
-        # edit_fr_sql ???덉쑝硫?source_sql濡??, ?꾨＼?ы듃?먮뒗 source_sql ???ㅼ뼱媛?        edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
+        # EDIT_FR_SQL이 있으면 원본 FR_SQL보다 우선 사용한다.
+        edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
         if not source_sql:
@@ -2226,7 +2166,7 @@ class BatchAgentCommandTool(Component):
             "to_sql": to_sql,
         }
 
-    # action="generate_bind_sql": BIND_SQL???앹꽦?댁꽌 梨꾪똿 ?묐떟?쇰줈 諛섑솚?쒕떎. DB?먮뒗 ??ν븯吏 ?딅뒗??
+    # action="generate_bind_sql": BIND_SQL을 생성한다.
     def _sql__generate_bind_sql(self, space_nm: Any, sql_id: Any, to_sql: Any = None, last_error: Any = None) -> dict[str, Any]:
         job = self._sql__load_job(space_nm, sql_id)
         if not job:
@@ -2249,6 +2189,7 @@ class BatchAgentCommandTool(Component):
         if not final_to_sql:
             return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "TO_SQL is empty. Pass to_sql or save TO_SQL before generating BIND_SQL."}
 
+        # EDIT_FR_SQL이 있으면 원본 FR_SQL보다 우선 사용한다.
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
@@ -2274,7 +2215,7 @@ class BatchAgentCommandTool(Component):
             "bind_sql": bind_sql,
         }
 
-    # action="generate_test_sql": TEST_SQL???앹꽦?댁꽌 梨꾪똿 ?묐떟?쇰줈 諛섑솚?쒕떎. DB?먮뒗 ??ν븯吏 ?딅뒗??
+    # action="generate_test_sql": TEST_SQL을 생성한다.
     def _sql__generate_test_sql(self, space_nm: Any, sql_id: Any, to_sql: Any = None, bind_sql: Any = None, bind_set: Any = None, last_error: Any = None) -> dict[str, Any]:
         job = self._sql__load_job(space_nm, sql_id)
         if not job:
@@ -2301,6 +2242,7 @@ class BatchAgentCommandTool(Component):
         if not final_bind_set:
             return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "BIND_SET is empty. Pass bind_set or run BIND_SQL before generating TEST_SQL."}
 
+        # EDIT_FR_SQL이 있으면 원본 FR_SQL보다 우선 사용한다.
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
@@ -2326,7 +2268,7 @@ class BatchAgentCommandTool(Component):
             "test_sql": test_sql,
         }
 
-    # action="preview_to_sql_prompt": LLM ?몄텧 ?놁씠 SQL Conversion prompt瑜?誘몃━ ?뺤씤?쒕떎.
+    # action="preview_*_prompt": LLM 호출 없이 최종 프롬프트를 확인한다.
     def _sql__preview_to_sql_prompt(self, space_nm: Any, sql_id: Any, last_error: Any = None) -> dict[str, Any]:
 
         job = self._sql__load_job(space_nm, sql_id)
@@ -2334,6 +2276,7 @@ class BatchAgentCommandTool(Component):
             return {"ok": False, "error": "job not found"}
 
 
+        # EDIT_FR_SQL이 있으면 원본 FR_SQL보다 우선 사용한다.
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
@@ -2364,7 +2307,7 @@ class BatchAgentCommandTool(Component):
             "rag_rule_count": rag_rule_count,
         }
 
-    # action="preview_bind_sql_prompt": LLM ?몄텧 ?놁씠 BIND SQL prompt瑜?誘몃━ ?뺤씤?쒕떎.
+    # action="preview_*_prompt": LLM 호출 없이 최종 프롬프트를 확인한다.
     def _sql__preview_bind_sql_prompt(self, space_nm: Any, sql_id: Any, to_sql: Any = None, last_error: Any = None) -> dict[str, Any]:
         job = self._sql__load_job(space_nm, sql_id)
         if not job:
@@ -2378,7 +2321,7 @@ class BatchAgentCommandTool(Component):
         prompt = self._sql__build_bind_sql_prompt(job, final_to_sql, mapping_schema_text, last_error)
         return {"ok": True, "action": "preview_bind_sql_prompt", "space_nm": space_nm, "sql_id": sql_id, "prompt_kind": "bind", "prompt_length": len(prompt), "prompt": prompt, "db_updated": False, "llm_called": False, "fr_tables": fr_tables, "map_ids": map_ids, "rag_rule_count": rag_rule_count}
 
-    # action="preview_test_sql_prompt": LLM ?몄텧 ?놁씠 TEST SQL prompt瑜?誘몃━ ?뺤씤?쒕떎.
+    # action="preview_*_prompt": LLM 호출 없이 최종 프롬프트를 확인한다.
     def _sql__preview_test_sql_prompt(self, space_nm: Any, sql_id: Any, to_sql: Any = None, bind_sql: Any = None, bind_set: Any = None, last_error: Any = None) -> dict[str, Any]:
         job = self._sql__load_job(space_nm, sql_id)
         if not job:
@@ -2397,25 +2340,21 @@ class BatchAgentCommandTool(Component):
         return {"ok": True, "action": "preview_test_sql_prompt", "space_nm": space_nm, "sql_id": sql_id, "prompt_kind": "test", "prompt_length": len(prompt), "prompt": prompt, "db_updated": False, "llm_called": False, "fr_tables": fr_tables, "map_ids": map_ids, "rag_rule_count": rag_rule_count}
 
 
-    # action="run_sql_conversion_job": TO_SQL ?앹꽦, BIND_SQL ?ㅽ뻾, TEST_SQL 寃利앷퉴吏 SQL Conversion ?꾩껜 ?묒뾽???섑뻾?쒕떎.
+    # action="run_sql_conversion_job": TO_SQL, BIND_SQL, TEST_SQL 생성과 검증을 수행한다.
     def _sql_run_sql_conversion_job(self, sql_id: str, space_nm: str, command: dict[str, Any]) -> dict[str, Any]:
 
-        #=====_run_sql_conversion_job? ?ъ슜?먭? 梨꾪똿?쇰줈 ?몄텧???섎룄 ?덇린 ?뚮Ц???ъ슜?먭? ?붿껌??job???ㅽ뻾 媛?ν븳吏 寃利앺븳??=====
         if (sql_id is None or str(sql_id).strip() == "") or (space_nm is None or str(space_nm).strip() == ""):
             return {"ok": False, "error": "sql_id and space_nm are required for run_sql_conversion_job"}
         sql_id = str(sql_id or "").strip()
         space_nm = str(space_nm or "").strip()
 
-        # job ?ㅽ뻾??嫄몃┛ ?쒓컙 痢≪젙 : ??肄붾뱶 湲곗? - 理쒖쥌 PASS/FAIL ?곹깭 ?????elapsed_seconds 怨꾩궛
         started = time.perf_counter()
         max_attempts = max(1, int(command.get("max_attempts") or 1))
 
-        # job??DB?먯꽌 議고쉶?섍퀬, STATUS_CONVERSION??NULL?몄???_load_job?먯꽌 ?뺤씤
         job = self._sql__load_job(space_nm, sql_id)
         if not job:
             return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "error": "job not found"}
 
-        # SQL Conversion ?묒뾽 ??곸? STATUS_CONVERSION??NULL??row留??덉슜?쒕떎.
         current_status = str(job.get("status_conversion") or "").strip().upper()
         if current_status:
             return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": current_status, "error": "run_sql_conversion_job is allowed only when STATUS_CONVERSION is NULL."}
@@ -2428,14 +2367,11 @@ class BatchAgentCommandTool(Component):
         last_retry_count = 0
 
         try:
-            # mapping_schema_text??TO_SQL/TEST_SQL prompt??怨듯넻?쇰줈 ?ㅼ뼱媛??留ㅽ븨猷??ㅻ챸?대떎.
             mapping_schema_text, map_ids, fr_tables, rag_rule_count = self._sql__build_mapping_schema_text(job)
             last_failure: dict[str, Any] = {}
             to_sql_executed = False
             bind_sql_executed = False
             test_sql_executed = False
-            # ===========================SQL Conversion ?④퀎蹂??ㅽ뻾 ===========================
-            # attempt??1遺???쒖옉?섍퀬, retry_count/ATTEMPT_NO??濡쒓렇 湲곗??쇰줈 0遺???쒖옉?쒕떎.
             for attempt in range(1, max_attempts + 1):
                 retry_count = attempt - 1
                 last_retry_count = retry_count
@@ -2443,16 +2379,13 @@ class BatchAgentCommandTool(Component):
                 user_edited = str(job.get("user_edited") or "").strip().upper() == "Y"
                 tag_kind = str(job.get("tag_kind") or "").strip().upper()
 
-                # [TO_SQL ?④퀎: USER_EDITED=Y?대㈃ DB????λ맂 TO_SQL??洹몃?濡??곌퀬, ?꾨땲硫?LLM?쇰줈 ?앹꽦?쒕떎.]
                 if not to_sql_executed:
-                    # user_edited媛 Y?대㈃ ?ъ슜?먭? ??ν븳 TO_SQL??洹몃?濡??ъ슜?쒕떎.
                     if user_edited:
                         to_sql = str(job.get("to_sql") or "").strip()
                         if not to_sql:
                             raise ValueError("USER_EDITED=Y but TO_SQL is empty")
                         last_to_sql = to_sql
                         steps.append({"step": "generate_to_sql", "attempt": attempt, "status": "SUCCESS-TOBE", "message": "USER_EDITED=Y. Existing TO_SQL was used."})
-                    # user_edited媛 N?대㈃ LLM?쇰줈 TO_SQL???덈줈 ?앹꽦?쒕떎.
                     else:
                         to_sql_result = self._sql__generate_to_sql(space_nm, sql_id, last_error=last_failure.get("error", ""))
                         if to_sql_result.get("ok"):
@@ -2465,11 +2398,9 @@ class BatchAgentCommandTool(Component):
                                 continue
                             break
                         last_to_sql = str(to_sql_result.get("to_sql") or "").strip()
-                    # TO_SQL ?앹꽦???깃났?섎㈃ ?ㅽ뻾 ?꾨즺 ?쒖떆瑜??④린怨? ?ㅼ쓬 ?ъ떆?꾩뿉?쒕뒗 TO_SQL ?ъ깮?깆쓣 嫄대꼫?대떎.
                     to_sql_executed = True
                     self._sql__write_log(sql_id, space_nm, "TO_SQL", "PASS", "GENERATE_TO_SQL", "TO_SQL generated", retry_count, last_to_sql, int(time.perf_counter() - started), "TO_SQL_PROMPT")
 
-                # SELECT媛 ?꾨땲硫?BIND/TEST ?놁씠 TO_SQL ?깃났留뚯쑝濡?Conversion???꾨즺?쒕떎.
                 if tag_kind != "SELECT":
                     elapsed = int(time.perf_counter() - started)
                     self._sql__save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
@@ -2477,7 +2408,6 @@ class BatchAgentCommandTool(Component):
                     self._sql__write_log(sql_id, space_nm, "TO_SQL", "PASS", "FINAL", "SQL Conversion completed without BIND/TEST because TAG_KIND is not SELECT", retry_count, last_to_sql, elapsed)
                     return {"ok": True, "space_nm": space_nm, "sql_id": sql_id, "status": "PASS-CONVERSION", "status_tuning": "READY", "elapsed_seconds": elapsed, "retry_count": retry_count, "steps": steps, "to_sql": last_to_sql, "map_ids": map_ids, "fr_tables": fr_tables, "rag_rule_count": rag_rule_count}
 
-                # BIND_SQL ?④퀎: FR_SQL 湲곗??쇰줈 bind 媛믪쓣 戮묐뒗 SELECT瑜?留뚮뱾怨??ㅽ뻾 寃곌낵瑜?BIND_SET JSON?쇰줈 蹂닿??쒕떎.
                 if not bind_sql_executed:
                     try:
                         bind_result = self._sql__generate_bind_sql(space_nm, sql_id, last_to_sql, last_failure.get("error", ""))
@@ -2518,7 +2448,6 @@ class BatchAgentCommandTool(Component):
                             continue
                         break
 
-                # TEST_SQL ?④퀎: TO_SQL怨?BIND_SET??湲곗??쇰줈 FROM_COUNT/TO_COUNT 鍮꾧탳 SQL??留뚮뱾怨??ㅽ뻾?쒕떎.
                 if not test_sql_executed:
                     try:
                         test_result = self._sql__generate_test_sql(space_nm, sql_id, last_to_sql, last_bind_sql, last_bind_set, last_failure.get("error", ""))
@@ -2576,7 +2505,6 @@ class BatchAgentCommandTool(Component):
                             continue
                         break
 
-            # 紐⑤뱺 ?ъ떆?꾧? PASS ?놁씠 ?앸굹硫?留덉?留??ㅽ뙣 ?곹깭? ?앹꽦??SQL????ν븳??
             final_status = str(last_failure.get("status") or "FAIL-CONVERSION")
             elapsed = int(time.perf_counter() - started)
             self._sql__save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
@@ -2584,7 +2512,6 @@ class BatchAgentCommandTool(Component):
             self._sql__write_log(sql_id, space_nm, "ERROR", "FAIL", "FINAL", str(last_failure.get("error") or "Max attempts reached")[:3900], last_retry_count, last_test_sql or last_bind_sql or last_to_sql, elapsed)
             return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": final_status, "error": last_failure.get("error") or "Max attempts reached", "elapsed_seconds": elapsed, "retry_count": last_retry_count, "steps": steps}
         except Exception as exc:
-            # ?덉긽?섏? 紐삵븳 ?덉쇅??理쒖쥌 ?ㅽ뙣濡???ν븯怨? ?꾩옱源뚯? ?앹꽦??SQL???④퍡 ?④릿??
             elapsed = int(time.perf_counter() - started)
             self._sql__save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
             self._sql__update_job_status(sql_id, space_nm, "FAIL-CONVERSION", elapsed, last_retry_count)
@@ -2592,9 +2519,8 @@ class BatchAgentCommandTool(Component):
             return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": "FAIL-CONVERSION", "error": str(exc), "elapsed_seconds": elapsed, "retry_count": last_retry_count, "steps": steps}
 
     # ======================================================================
-    # 怨듯넻 肄붾뱶
+    # 공통 코드
     # ======================================================================
-    # command_json??dict濡?蹂?섑븯怨?action/space_nm/sql_id 媛숈? ?ㅽ뻾 媛믪쓣 ?댁꽍?쒕떎.
     def _sql__parse_command(self) -> dict[str, Any]:
 
 
@@ -2606,7 +2532,7 @@ class BatchAgentCommandTool(Component):
             raise ValueError("command_json is required")
         return json.loads(text)
 
-    # DB ?낅젰媛믪쓣 Oracle SQLAlchemy connection string?쇰줈 議곕┰?쒕떎.
+    # DB 입력값으로 Oracle SQLAlchemy connection string을 만든다.
     def _sql__connection_string(self) -> str:
         host = str(self.db_host or "").strip()
         port = int(self.db_port or 1521)
@@ -2621,8 +2547,7 @@ class BatchAgentCommandTool(Component):
             raise ValueError("Username is required")
         return f"oracle+oracledb://{quote_plus(username)}:{quote_plus(password)}@{host}:{port}/{service_name}"
 
-    # 媛숈? DB ?묒냽 ?뺣낫??_db_cache?먯꽌 ?ъ궗?⑺븳??
-    # ??뵆濡쒖슦?먯꽌 SQLDatabase.from_uri 瑜??ъ슜?섍린 ?꾪빐 ?곕줈 怨듯넻?⑥닔濡?類?
+    # 같은 DB 접속 정보는 SQLDatabase 인스턴스를 캐시해 재사용한다.
     def _sql__get_db(self):
         self._sql__ensure_runtime_dependencies()
         from langchain_community.utilities import SQLDatabase
@@ -2640,7 +2565,7 @@ class BatchAgentCommandTool(Component):
         self.db = self._db_cache[cache_key]
         return self.db
 
-    # DB ?곌껐???꾩슂???뚯씠???⑦궎吏媛 import 媛?ν븳吏 ?뺤씤?쒕떎.
+    # DB 연결에 필요한 런타임 패키지를 확인한다.
     def _sql__ensure_runtime_dependencies(self) -> None:
         missing_packages: list[str] = []
         try:
@@ -2670,7 +2595,6 @@ class BatchAgentCommandTool(Component):
     def _sql__pip_install(self, package: str) -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
-    # OpenAI ?명솚 LLM API??JSON ?붿껌??蹂대궡怨??묐떟 dict瑜?諛섑솚?쒕떎.
     def _sql__post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
         req_headers = {"Content-Type": "application/json", **headers}
@@ -2684,7 +2608,6 @@ class BatchAgentCommandTool(Component):
             detail = exc.read().decode("utf-8", errors="ignore")[:1000]
             raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
 
-    # SQLDatabase ?대? engine?먯꽌 DB connection??爰쇰궡 cursor ?묒뾽???ъ슜?쒕떎.
     @contextmanager
     def _sql__connect(self):
         db = self._sql__get_db()
@@ -2692,7 +2615,7 @@ class BatchAgentCommandTool(Component):
             raw = conn.connection
             yield raw
 
-    # NEXT_SQL_INFO?먯꽌 space_nm/sql_id???대떦?섎뒗 ?묒뾽 row瑜?議고쉶?쒕떎.
+    # NEXT_SQL_INFO에서 space_nm/sql_id에 해당하는 작업 row를 조회한다.
     def _sql__load_job(self, space_nm: Any, sql_id: Any) -> dict[str, Any] | None:
         table = self._sql__qualify_table("NEXT_SQL_INFO", self.system_schema)
         space_nm = str(space_nm or "").strip()
@@ -2744,7 +2667,7 @@ class BatchAgentCommandTool(Component):
         }
 
 
-    # TARGET_TABLE??FR_TABLE 紐⑸줉??湲곗??쇰줈 migration map/rag ?뺣낫瑜?留뚮뱺??
+    # TARGET_TABLE의 FR_TABLE 기준으로 mapping/RAG 정보를 구성한다.
     def _sql__build_mapping_schema_text(self, job: dict[str, Any]) -> tuple[str, list[int], list[str], int]:
 
         fr_tables = self._sql__extract_target_fr_tables(job.get("target_table"))
@@ -2826,15 +2749,12 @@ class BatchAgentCommandTool(Component):
                 sections.append(
                     f"  - map_id={map_id}; map_type={map_type}; from={fr_table}.{fr_col or '*'}; to={to_table}.{to_col or '*'}; condition={condition}"
                 )
-        # NEXT_MIG_RAG_INFO?먯꽌 CATEGORY=SQL_CONVERSION?닿퀬 SOURCE_TABLES媛 FR_TABLE怨?媛숈? rule??理쒕? 3媛쒖뵫 媛?몄???guidance瑜?蹂댁뿬以??
-        # ?먮옒???꾨쿋??湲곕컲 RAG濡??곕젮怨??덈뒗???곗꽑 FR_TABLE 湲곗??쇰줈 媛꾨떒?섍쾶 RAG瑜?蹂댁뿬二쇰뒗 寃껋쑝濡?援ы쁽?쒕떎.
         sections.append("\n[SQL_CONVERSION_RAG_GUIDANCE]")
         rag_lines = self._sql__load_conversion_rag_rules(fr_tables)
         sections.extend(rag_lines)
         rag_rule_count = len([line for line in rag_lines if line.strip().startswith("- {")])
         return "\n".join(sections), map_ids, fr_tables, rag_rule_count
 
-    # NEXT_MIG_RAG_INFO?먯꽌 CATEGORY=SQL_CONVERSION?닿퀬 SOURCE_TABLES媛 FR_TABLE怨?媛숈? rule??理쒕? 3媛쒖뵫 媛?몄삩??
     def _sql__load_conversion_rag_rules(self, fr_tables: list[str]) -> list[str]:
         table = self._sql__qualify_table("NEXT_MIG_RAG_INFO", self.system_schema)
         if not fr_tables:
@@ -2875,7 +2795,7 @@ class BatchAgentCommandTool(Component):
             return ["  - No SQL_CONVERSION RAG rules loaded."]
         return lines or ["  - No SQL_CONVERSION RAG rules found for FR_TABLE hints."]
 
-    # to_sql_prompt???먮━?쒖떆?먮? ?ㅼ젣 媛믪쑝濡?移섑솚?쒕떎.
+    # to_sql_prompt placeholder를 실제 값으로 치환한다.
     def _sql__render_to_sql_prompt(
         self,
         from_sql: str,
@@ -2898,7 +2818,7 @@ class BatchAgentCommandTool(Component):
             template = template.replace("{" + key + "}", str(value))
         return template
 
-    # bind_sql_prompt???먮━?쒖떆?먮? ?ㅼ젣 媛믪쑝濡?移섑솚?쒕떎.
+    # bind_sql_prompt placeholder를 실제 값으로 치환한다.
     def _sql__render_bind_sql_prompt(
         self,
         from_sql: str,
@@ -2916,7 +2836,7 @@ class BatchAgentCommandTool(Component):
             template = template.replace("{" + key + "}", str(value))
         return template
 
-    # test_sql_prompt???먮━?쒖떆?먮? ?ㅼ젣 媛믪쑝濡?移섑솚?쒕떎.
+    # test_sql_prompt placeholder를 실제 값으로 치환한다.
     def _sql__render_test_sql_prompt(
         self,
         from_sql: str,
@@ -2936,7 +2856,6 @@ class BatchAgentCommandTool(Component):
             template = template.replace("{" + key + "}", str(value))
         return template
 
-    # OpenAI ?명솚 chat/completions 寃쎈줈濡?LLM???몄텧?쒕떎.
     def _sql__call_llm(self, prompt: str) -> str:
         api_key = str(self.llm_api_key or "").strip()
         model = str(self.llm_model or "").strip()
@@ -2956,7 +2875,6 @@ class BatchAgentCommandTool(Component):
         data = self._sql__post_json(url, payload, {"Authorization": f"Bearer {api_key}"})
         return str(data["choices"][0]["message"].get("content", ""))
 
-    # LLM ?묐떟?먯꽌 留덊겕?ㅼ슫 肄붾뱶 釉붾줉怨?留덉?留??몃?肄쒕줎???쒓굅?쒕떎.
     def _sql__sanitize_to_sql(self, value: str) -> str:
         text = str(value or "").strip()
         if text.startswith("```"):
@@ -2968,8 +2886,8 @@ class BatchAgentCommandTool(Component):
             raise ValueError("LLM returned empty SQL")
         return text
 
-    # BIND_SQL ?앹꽦怨?preview媛 媛숈? prompt瑜??곕룄濡?prompt 援ъ꽦留???怨녹뿉 紐⑥???
     def _sql__build_bind_sql_prompt(self, job: dict[str, Any], to_sql: str, mapping_schema_text: str, last_error: Any = None) -> str:
+        # EDIT_FR_SQL이 있으면 원본 FR_SQL보다 우선 사용한다.
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
@@ -2994,8 +2912,8 @@ class BatchAgentCommandTool(Component):
             last_error=str(last_error or "None"),
         )
 
-    # TEST_SQL ?앹꽦怨?preview媛 媛숈? prompt瑜??곕룄濡?prompt 援ъ꽦留???怨녹뿉 紐⑥???
     def _sql__build_test_sql_prompt(self, job: dict[str, Any], to_sql: str, bind_sql: str, bind_set: str, mapping_schema_text: str, last_error: Any = None) -> str:
+        # EDIT_FR_SQL이 있으면 원본 FR_SQL보다 우선 사용한다.
         edit_fr_sql = str(job.get("edit_fr_sql") or "").strip()
         fr_sql = str(job.get("fr_sql") or "").strip()
         source_sql = edit_fr_sql if edit_fr_sql else fr_sql
@@ -3013,7 +2931,6 @@ class BatchAgentCommandTool(Component):
             last_error=str(last_error or "None"),
         )
 
-    # 理쒖쥌 ?깃났/?ㅽ뙣 ?쒖젏???앹꽦??SQL?ㅼ쓣 NEXT_SQL_INFO????ν븳??
     def _sql__save_final_sql(self, sql_id: str, space_nm: str, to_sql: str, bind_sql: str, bind_set: str, test_sql: str) -> None:
         assignments = []
         params: list[Any] = []
@@ -3040,7 +2957,7 @@ class BatchAgentCommandTool(Component):
             )
             conn.commit()
 
-    # 理쒖쥌 STATUS_CONVERSION/STATUS_TUNING, retry, batch count瑜?NEXT_SQL_INFO????ν븳??
+    # SQL Conversion 최종 상태와 batch count를 NEXT_SQL_INFO에 저장한다.
     def _sql__update_job_status(self, sql_id: str, space_nm: str, status_conversion: str, elapsed_seconds: int, retry_count: int, status_tuning: str | None = None) -> None:
         assignments = ["STATUS_CONVERSION = :1", "RETRY_COUNT = :2", "BATCH_CNT = NVL(BATCH_CNT, 0) + 1", "LOG = :3", "UPD_TS = CURRENT_TIMESTAMP"]
         params: list[Any] = [status_conversion, retry_count, f"STATUS_CONVERSION={status_conversion}; elapsed={elapsed_seconds}s; retry={retry_count}"]
@@ -3062,7 +2979,7 @@ class BatchAgentCommandTool(Component):
             )
             conn.commit()
 
-    # SQL Conversion ?④퀎蹂??대젰??NEXT_SQL_LOG??湲곕줉?쒕떎.
+    # SQL Conversion 단계 로그를 NEXT_SQL_LOG에 저장한다.
     def _sql__write_log(self, sql_id: str, space_nm: str, sql_kind: str, status: str, stage_name: str, message: str, retry_count: int = 0, sql_content: str | None = None, elapsed_seconds: int | None = None, prompt_name: str | None = None) -> None:
         table = self._sql__qualify_table("NEXT_SQL_LOG", self.system_schema)
         try:
@@ -3098,7 +3015,6 @@ class BatchAgentCommandTool(Component):
         except Exception:
             pass
 
-    # ?ㅽ뻾??SQL?먯꽌 MyBatis ?쒓렇瑜?留됯퀬 LIMIT/FETCH 臾몃쾿??Oracle ?뺥깭濡??뺣━?쒕떎.
     def _sql__prepare_runtime_sql(self, sql_text: str, stage: str) -> str:
         clean_sql = self._sql__sanitize_to_sql(sql_text)
         lowered = clean_sql.lower()
@@ -3117,7 +3033,6 @@ class BatchAgentCommandTool(Component):
             clean_sql = f"SELECT * FROM ({inner}) WHERE ROWNUM <= {limit}"
         return clean_sql
 
-    # dict row?먯꽌 而щ읆 ??뚮Ц??李⑥씠瑜?臾댁떆?섍퀬 媛믪쓣 爰쇰궦??
     def _sql__get_row_value(self, row: dict[str, Any], key: str) -> Any:
         if key in row:
             return row[key]
@@ -3127,7 +3042,6 @@ class BatchAgentCommandTool(Component):
                 return value
         return None
 
-    # DB 媛믪쓣 JSON?쇰줈 蹂??媛?ν븳 媛믪쑝濡?諛붽씔??
     def _sql__json_value(self, value: Any) -> Any:
         if value is None:
             return None
@@ -3139,7 +3053,6 @@ class BatchAgentCommandTool(Component):
             return value
         return str(value)
 
-    # action step ?붿빟?먮뒗 ??SQL 蹂몃Ц???쒖쇅?섍퀬 ?묒? 媛믩쭔 ?④릿??
     def _sql__summary_result(self, result: dict[str, Any]) -> dict[str, Any]:
         summary = {"ok": bool(result.get("ok")), "status": result.get("status")}
         for key in ["message", "error", "row_count", "elapsed_seconds", "retry_count"]:
@@ -3147,7 +3060,6 @@ class BatchAgentCommandTool(Component):
                 summary[key] = result.get(key)
         return summary
 
-    # TARGET_TABLE JSON 諛곗뿴?먯꽌 FR_TABLE 紐⑸줉??爰쇰궦??
     def _sql__extract_target_fr_tables(self, value: Any) -> list[str]:
         text = self._sql__to_text(value).strip()
         if not text:
@@ -3162,14 +3074,12 @@ class BatchAgentCommandTool(Component):
                 names.append(clean_table)
         return names[:50]
 
-    # schema媛 遺숈? ?뚯씠釉붾챸? 留덉?留??뚯씠釉붾챸留??④꺼 鍮꾧탳 湲곗??쇰줈 ?ъ슜?쒕떎.
     def _sql__normalize_table_name(self, value: Any) -> str:
         text = self._sql__to_text(value).strip().strip('"').upper()
         if "." in text:
             text = text.split(".")[-1]
         return text
 
-    # schema ?낅젰媛믪씠 ?덉쑝硫??뚯씠釉붾챸 ?욎뿉 schema瑜?遺숈씤??
     def _sql__qualify_table(self, table_name: str, schema: str | None) -> str:
         clean = str(table_name or "").strip()
         clean_schema = str(schema or "").strip().upper()
@@ -3181,7 +3091,6 @@ class BatchAgentCommandTool(Component):
             raise ValueError(f"Invalid schema: {clean_schema}")
         return f"{clean_schema}.{clean}"
 
-    # CLOB/bytes/None 媛믪쓣 ?덉쟾?섍쾶 臾몄옄?대줈 蹂?섑븳??
     def _sql__to_text(self, value: Any) -> str:
         if value is None:
             return ""
@@ -3199,4 +3108,5 @@ class BatchAgentCommandTool(Component):
         if value is None:
             return False
         return str(value).strip().lower() in {"1", "true", "t", "y", "yes", "on"}
+
 
