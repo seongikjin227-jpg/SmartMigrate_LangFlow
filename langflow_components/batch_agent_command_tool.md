@@ -2,131 +2,104 @@
 
 파일: `langflow_components/batch_agent_command_tool.py`
 
-이 컴포넌트는 LangFlow 단독 컨테이너 안에서 SmartMigration 배치 loop를 background thread로 실행하기 위한 커스텀 컴포넌트다.
+LangFlow 단독 컨테이너 안에서 SmartMigration 배치 루프를 실행하는 커스텀 컴포넌트다.
 
-DB Migration과 SQL Conversion 업무 로직은 같은 class 안의 내부 함수로 복사되어 있다. `migration_command_tool.py`, `sql_conversion_command_tool.py`를 import하지 않는다.
+DB Migration과 SQL Conversion 업무 로직은 같은 class 내부 함수로 복사되어 있다. `migration_command_tool.py`, `sql_conversion_command_tool.py`를 import하지 않는다.
 
-## 실행 방식
+## 실행 제어 원칙
 
-현재는 `start` 기반 background thread 방식을 먼저 시도한다.
+배치 실행 여부의 기준은 `NEXT_BATCH_CONTROL`이다.
+
+`NEXT_BATCH_LOG`는 이력/관찰용 로그 테이블이며, 실행 여부나 중복 실행 방지의 기준으로 사용하지 않는다.
+
+상태 변경은 batch agent action으로만 수행한다.
+
+- `start`: `NEXT_BATCH_CONTROL`을 `RUNNING`으로 변경하고 background thread를 시작한다.
+- `stop`: `NEXT_BATCH_CONTROL`에 stop 요청을 기록한다.
+- `status`: `NEXT_BATCH_CONTROL`과 현재 메모리 thread 상태를 조회한다.
+
+## Supported Actions
 
 ```json
 {"action":"start"}
 ```
 
 동작:
-1. 이미 실행 중인 thread가 있는지 확인한다.
-2. 실행 중이면 새 thread를 만들지 않고 `already_running`을 반환한다.
-3. background thread를 시작한다.
-4. tool은 즉시 return한다.
-5. loop 상태와 job 결과는 `NEXT_BATCH_LOG`에 계속 저장된다.
 
-보강:
-- `background_thread_daemon=false`가 기본값이다.
-- non-daemon thread는 정상적인 Python process 종료 시 thread를 기다리므로 daemon thread보다 쉽게 정리되지 않는다.
-- 다만 LangFlow runtime이 worker process를 강제 종료하거나 재시작하면 thread는 유지되지 않는다.
-- `status`는 메모리의 thread handle만 보지 않고 `NEXT_BATCH_LOG`의 최신 event도 함께 확인한다.
-- 최신 로그가 `STOPPED`, `STOP_REQUESTED`가 아니고 `status_log_alive_grace_seconds` 안에 있으면 실행 중으로 추론한다.
-
-## 지원 Action
-
-```json
-{"action":"start"}
-```
-
-background thread 방식으로 배치 loop를 시작하고 즉시 반환한다.
+1. `NEXT_BATCH_CONTROL`의 `BATCH_AGENT` row를 `SELECT ... FOR UPDATE`로 잠근다.
+2. 현재 상태가 `RUNNING` 또는 `STOP_REQUESTED`이고 heartbeat가 살아 있으면 새 thread를 만들지 않고 `already_running` 또는 `stop_requested`를 반환한다.
+3. 실행 가능하면 `RUN_ID`를 새로 발급하고 control row를 `RUNNING`으로 변경한다.
+4. background thread를 시작하고 즉시 반환한다.
 
 ```json
 {"action":"stop"}
 ```
 
-stop event를 set한다.
-현재 status 호출에서 thread handle이 보이지 않아도, 최신 active `RUN_ID`에 `STOP_REQUESTED` 로그를 저장한다.
-worker loop는 자기 `RUN_ID`의 최신 로그가 `STOP_REQUESTED`인지 확인하고 while loop를 빠져나온다.
+동작:
+
+1. 메모리 stop event를 set한다.
+2. `NEXT_BATCH_CONTROL.STOP_REQUESTED_YN = 'Y'`로 변경한다.
+3. worker loop는 loop 시작, sleep 중, job 내부 주요 단계 사이에서 stop 요청을 확인한다.
+4. 중단되면 현재 job 상태를 `STOPPED`로 저장하고 control row를 `STOPPED`로 변경한다.
+
+주의: thread 기반이므로 이미 실행 중인 Oracle SQL execute 또는 LLM HTTP 요청 자체를 즉시 kill하지는 못한다. 해당 호출이 반환되는 즉시 다음 단계로 가지 않고 중단된다.
 
 ```json
 {"action":"status"}
 ```
 
-현재 실행 상태, run_id, loop_no, 마지막 event/job/error를 반환한다.
+동작:
 
-상태 판단 기준:
-- `status_source=memory`: 현재 status 호출에서 thread handle이 보인다.
-- `status_source=batch_log`: 현재 status 호출에서는 thread handle이 안 보이지만 `NEXT_BATCH_LOG` 기준으로 최근 loop가 살아있다고 추론했다.
-- `status_source=none`: 메모리와 로그 기준 모두 실행 중으로 볼 근거가 없다.
+`NEXT_BATCH_CONTROL`의 상태, `RUN_ID`, heartbeat, loop/job 정보를 반환한다. 현재 LangFlow 호출에서 메모리 thread handle이 보이면 memory 상태도 함께 반환한다.
 
-## Plain Text 입력 매핑
+## NEXT_BATCH_CONTROL
 
-```text
-백그라운드 실행 -> {"action":"start"}
-백그라운드 에이전트 실행 -> {"action":"start"}
-배치 에이전트 시작 -> {"action":"start"}
-배치 시작 -> {"action":"start"}
-배치 멈춰 / 배치 중지 / 백그라운드 중지 -> {"action":"stop"}
-배치 상태 / 백그라운드 상태 -> {"action":"status"}
-```
-
-## Batch Loop 규칙
-
-한 cycle에서 job은 최대 1건만 처리한다.
-
-우선순위:
-1. DB_MIGRATION
-2. SQL_CONVERSION
-3. NO_JOB
-
-Loop:
-
-```text
-while stop_event is not set:
-  1. NEXT_MIG_INFO에서 pending migration job 1건 조회
-  2. 있으면 run_migration_job(map_id) 실행
-  3. 결과를 NEXT_BATCH_LOG에 저장
-  4. job을 실행했으면 즉시 다음 loop
-
-  5. migration job이 없으면 NEXT_SQL_INFO에서 pending SQL conversion job 1건 조회
-  6. 있으면 run_sql_conversion_job(space_nm, sql_id) 실행
-  7. 결과를 NEXT_BATCH_LOG에 저장
-  8. job을 실행했으면 즉시 다음 loop
-
-  9. 둘 다 없으면 NO_JOB 로그 저장
-  10. no_job_sleep_seconds만큼 대기
-```
-
-기본 대기:
-
-```text
-job 실행: 0초
-job 없음: 600초
-loop error: 60초
-```
-
-## Pending Job 조건
-
-DB Migration:
+`NEXT_BATCH_CONTROL`은 배치 에이전트의 단일 실행 제어 테이블이다.
 
 ```sql
-SELECT MAP_ID
-FROM NEXT_MIG_INFO
-WHERE UPPER(TRIM(NVL(USE_YN, 'N'))) = 'Y'
-  AND STATUS IS NULL
-ORDER BY PRIORITY ASC, MAP_ID ASC
+CREATE TABLE NEXT_BATCH_CONTROL (
+    CONTROL_NAME       VARCHAR2(64) PRIMARY KEY,
+    STATUS             VARCHAR2(30) NOT NULL,
+    RUN_ID             VARCHAR2(64),
+    STOP_REQUESTED_YN  CHAR(1) DEFAULT 'N',
+    LOOP_NO            NUMBER DEFAULT 0,
+    STARTED_AT         TIMESTAMP,
+    HEARTBEAT_AT       TIMESTAMP,
+    STOP_REQUESTED_AT  TIMESTAMP,
+    STOPPED_AT         TIMESTAMP,
+    UPDATED_AT         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    LAST_EVENT         VARCHAR2(50),
+    LAST_AGENT         VARCHAR2(50),
+    LAST_JOB_ID        VARCHAR2(200),
+    LAST_JOB_STATUS    VARCHAR2(50),
+    LAST_ERROR         CLOB,
+    MESSAGE            VARCHAR2(1000)
+);
 ```
 
-SQL Conversion:
+초기 row:
 
 ```sql
-SELECT SPACE_NM, SQL_ID
-FROM NEXT_SQL_INFO
-WHERE STATUS_CONVERSION IS NULL
-ORDER BY PRIORITY ASC NULLS LAST, UPD_TS NULLS FIRST, SPACE_NM, SQL_ID
+INSERT INTO NEXT_BATCH_CONTROL (
+    CONTROL_NAME, STATUS, STOP_REQUESTED_YN, LOOP_NO, UPDATED_AT, MESSAGE
+) VALUES (
+    'BATCH_AGENT', 'STOPPED', 'N', 0, CURRENT_TIMESTAMP, 'Initialized.'
+);
 ```
 
-## Batch Log Table
+컴포넌트는 row가 없으면 action 실행 중 초기 row insert를 시도한다. 테이블 자체는 미리 생성되어 있어야 한다.
 
-`NEXT_BATCH_LOG`는 batch worker loop의 생존 여부와 cycle 처리 결과를 확인하기 위한 로그 테이블이다.
+상태값:
 
-`NEXT_MIG_LOG`, `NEXT_SQL_LOG`는 job 내부 단계 로그이고, `NEXT_BATCH_LOG`는 배치 loop 자체의 로그다.
+```text
+RUNNING
+STOP_REQUESTED
+STOPPED
+```
+
+## NEXT_BATCH_LOG
+
+`NEXT_BATCH_LOG`는 배치 loop의 이력 테이블이다. 실행 제어에는 사용하지 않는다.
 
 ```sql
 CREATE TABLE NEXT_BATCH_LOG (
@@ -154,34 +127,54 @@ ALREADY_RUNNING
 LOOP_START
 JOB_SUCCESS
 JOB_FAIL
+JOB_STOPPED
 NO_JOB
 LOOP_ERROR
 STOP_REQUESTED
 STOPPED
 ```
 
-종료 방식:
-1. stop action이 메모리의 stop event를 set한다.
-2. stop action이 `NEXT_BATCH_LOG`에 `STOP_REQUESTED`를 저장한다.
-3. background worker는 cycle 시작 전과 sleep 중에 자기 `RUN_ID`의 최신 event를 확인한다.
-4. 최신 event가 `STOP_REQUESTED`이면 while loop를 빠져나오고 `STOPPED`를 저장한다.
+## Batch Loop
 
-최근 로그:
+한 cycle에서는 job을 최대 1건만 처리한다.
 
-```sql
-SELECT *
-FROM NEXT_BATCH_LOG
-ORDER BY LOG_ID DESC
-FETCH FIRST 100 ROWS ONLY;
+우선순위:
+
+1. DB Migration
+2. SQL Conversion
+3. No Job
+
+대기 규칙:
+
+```text
+job 실행함: 즉시 다음 loop
+job 없음: no_job_sleep_seconds 대기
+loop error: error_sleep_seconds 대기
 ```
 
-최근 job 실행 결과:
+## Pending Job 조건
+
+DB Migration:
 
 ```sql
-SELECT LOG_ID, RUN_ID, LOOP_NO, EVENT_TYPE, AGENT_NAME, JOB_ID, JOB_STATUS,
-       ELAPSED_SECONDS, STARTED_AT, MESSAGE, ERROR_MESSAGE
-FROM NEXT_BATCH_LOG
-WHERE EVENT_TYPE IN ('JOB_SUCCESS', 'JOB_FAIL')
-ORDER BY LOG_ID DESC
-FETCH FIRST 50 ROWS ONLY;
+SELECT MAP_ID
+FROM NEXT_MIG_INFO
+WHERE UPPER(TRIM(NVL(USE_YN, 'N'))) = 'Y'
+  AND STATUS IS NULL
+ORDER BY PRIORITY ASC, MAP_ID ASC;
 ```
+
+SQL Conversion:
+
+```sql
+SELECT SPACE_NM, SQL_ID
+FROM NEXT_SQL_INFO
+WHERE STATUS_CONVERSION IS NULL
+ORDER BY PRIORITY ASC NULLS LAST, UPD_TS NULLS FIRST, SPACE_NM, SQL_ID;
+```
+
+## 운영 메모
+
+이미 여러 background thread가 떠 있는 상태라면 새 control table 로직만으로 기존 thread를 즉시 제거할 수 없다. 기존 thread는 이전 코드로 실행 중이기 때문이다.
+
+가장 확실한 정리 방법은 LangFlow 컨테이너 재시작이다. 재시작 후에는 `NEXT_BATCH_CONTROL` 기준으로 start 중복이 막힌다.
