@@ -50,7 +50,7 @@ class BatchAgentCommandTool(Component):
             display_name="Command JSON",
             required=True,
             tool_mode=True,
-            info='Batch command. Supported actions: {"action":"start"}, {"action":"stop"}, {"action":"status"}',
+            info='Batch command. Supported actions: {"action":"start"}, {"action":"stop"}, {"action":"status"}. Plain text batch start phrases map to start.',
         ),
         StrInput(name="db_host", display_name="DB Host", required=True),
         IntInput(name="db_port", display_name="DB Port", value=1521, required=True),
@@ -109,6 +109,13 @@ class BatchAgentCommandTool(Component):
             value=True,
             required=False,
             info="Create NEXT_BATCH_LOG if it does not exist.",
+        ),
+        BoolInput(
+            name="background_thread_daemon",
+            display_name="Background Thread Daemon",
+            value=False,
+            required=False,
+            info="If false, the background thread is non-daemon so normal Python process shutdown waits for it. This can improve survival but may delay container shutdown.",
         ),
     ]
 
@@ -169,13 +176,13 @@ class BatchAgentCommandTool(Component):
             cls._thread = threading.Thread(
                 target=cls._worker_loop,
                 args=(config, run_id),
-                daemon=True,
+                daemon=bool(config["background_thread_daemon"]),
                 name=f"smartmigration-batch-{run_id}",
             )
             cls._thread.start()
 
         self._write_batch_log_safe(config, run_id, 0, "START", message="Batch agent started.")
-        return {"ok": True, "status": "started", "running": True}
+        return {"ok": True, "status": "started", "running": True, "mode": "background_thread", "daemon": bool(config["background_thread_daemon"])}
 
     def _stop(self, config: dict[str, Any]) -> dict[str, Any]:
         cls = self.__class__
@@ -190,7 +197,7 @@ class BatchAgentCommandTool(Component):
 
     def _status(self) -> dict[str, Any]:
         cls = self.__class__
-        alive = bool(cls._thread and cls._thread.is_alive() and not cls._stop_event.is_set())
+        alive = bool((cls._thread and cls._thread.is_alive() and not cls._stop_event.is_set()) or (cls._state.get("running") and not cls._stop_event.is_set()))
         with cls._state_lock:
             state = dict(cls._state)
         state["running"] = alive
@@ -394,12 +401,19 @@ class BatchAgentCommandTool(Component):
             "error_sleep_seconds": max(1, int(self.error_sleep_seconds or 60)),
             "auto_install_packages": self._as_bool(self.auto_install_packages),
             "auto_create_log_table": self._as_bool(self.auto_create_log_table),
+            "background_thread_daemon": self._as_bool(self.background_thread_daemon),
         }
 
     def _parse_command(self) -> dict[str, Any]:
         raw = str(self.command_json or "").strip()
         if not raw:
             return {}
+        if raw in {"백그라운드 실행", "백그라운드 에이전트 실행", "배치 에이전트 시작", "배치 시작"}:
+            return {"action": "start"}
+        if raw in {"배치 멈춰", "배치 중지", "백그라운드 중지"}:
+            return {"action": "stop"}
+        if raw in {"배치 상태", "백그라운드 상태"}:
+            return {"action": "status"}
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             raise ValueError("command_json must be a JSON object")

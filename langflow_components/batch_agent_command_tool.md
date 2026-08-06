@@ -1,168 +1,101 @@
-﻿# Batch Agent Command Tool
+# Batch Agent Command Tool
 
-?뚯씪: `langflow_components/batch_agent_command_tool.py`
+파일: `langflow_components/batch_agent_command_tool.py`
 
-??而댄룷?뚰듃??Langflow ?⑤룆 而⑦뀒?대꼫 ?덉뿉??SmartMigration 諛곗튂 ?먯씠?꾪듃瑜?諛깃렇?쇱슫??thread濡??ㅽ뻾?쒕떎.
+이 컴포넌트는 LangFlow 단독 컨테이너 안에서 SmartMigration 배치 loop를 background thread로 실행하기 위한 커스텀 컴포넌트다.
 
-湲곗〈 ?뚯씪? ?섏젙?섏? ?딅뒗??
+DB Migration과 SQL Conversion 업무 로직은 같은 class 안의 내부 함수로 복사되어 있다. `migration_command_tool.py`, `sql_conversion_command_tool.py`를 import하지 않는다.
 
-- `langflow_components/migration_command_tool.py`
-- `langflow_components/sql_conversion_command_tool.py`
+## 실행 방식
 
-Langflow Custom Component runtime may not reliably import other custom component files.
-For that reason, this file contains exactly one component class: `BatchAgentCommandTool`.
-
-DB Migration and SQL Conversion business logic is implemented as internal functions inside `BatchAgentCommandTool`.
-
-## ??븷 援щ텇
-
-### DB Migration Agent / SQL Conversion Agent
-
-梨꾪똿???댁쁺 ?명꽣?섏씠?ㅻ떎.
-
-?ъ슜???붿껌???곕씪 ?ㅼ뼇??action???섑뻾?쒕떎.
-
-```text
-status
-list_pending
-generate_mig_sql
-generate_verify_sql
-save_user_sql
-reset
-analyze_failure
-run_migration_job
-run_sql_conversion_job
-```
-
-### Background Batch Agent
-
-臾댁씤 諛곗튂 worker??
-
-?ъ슜???붿껌???댁꽍?섏? ?딄퀬, DB ?곹깭留?蹂닿퀬 deterministic?섍쾶 ?吏곸씤??
-
-?몃? action? ?꾨옒留?吏?먰븳??
-
-```text
-start
-stop
-status
-```
-
-?대? loop?먯꽌留??꾨옒 ?ㅽ뻾 action???몄텧?쒕떎.
-
-```text
-run_migration_job
-run_sql_conversion_job
-```
-
-`status`, `reset`, `save_user_sql`, `generate_* preview`, `analyze_failure` 媛숈? 梨꾪똿??action? 諛곗튂 loop?먯꽌 ?몄텧?섏? ?딅뒗??
-
-## Langflow ?곌껐
-
-?덉긽 Flow:
-
-```text
-Chat Input
--> Supervisor Agent
--> Batch Agent Command Tool
--> Chat Output ?먮뒗 誘몄뿰寃?```
-
-?ъ슜?먭? Langflow Playground?먯꽌 ?꾨옒泥섎읆 ?낅젰?쒕떎.
-
-```text
-諛깃렇?쇱슫??諛곗튂 ?먯씠?꾪듃 ?ㅽ뻾
-```
-
-Supervisor Agent??Batch Agent Command Tool???꾨옒 command瑜??꾨떖?쒕떎.
+현재는 `start` 기반 background thread 방식을 먼저 시도한다.
 
 ```json
 {"action":"start"}
 ```
 
-Tool? 諛깃렇?쇱슫??thread瑜??쒖옉?섍퀬 利됱떆 諛섑솚?쒕떎. 臾댄븳 loop??chat request thread?먯꽌 吏곸젒 ?뚯? ?딅뒗??
+동작:
+1. 이미 실행 중인 thread가 있는지 확인한다.
+2. 실행 중이면 새 thread를 만들지 않고 `already_running`을 반환한다.
+3. 실행 중이 아니면 `NEXT_BATCH_LOG` 테이블을 생성 시도한다. `auto_create_log_table=true`일 때만 수행한다.
+4. background thread를 시작한다.
+5. tool은 즉시 return한다.
+6. loop 상태와 job 결과는 `NEXT_BATCH_LOG`에 계속 저장된다.
 
-## 吏??command
+보강:
+- `background_thread_daemon=false`가 기본값이다.
+- non-daemon thread는 정상적인 Python process 종료 시 thread를 기다리므로 daemon thread보다 쉽게 정리되지 않는다.
+- 다만 LangFlow runtime이 worker process를 강제 종료하거나 재시작하면 thread는 유지되지 않는다.
 
-### start
+## 지원 Action
 
 ```json
 {"action":"start"}
 ```
 
-?숈옉:
-
-```text
-1. ?대? ?ㅽ뻾 以묒씤吏 ?뺤씤?쒕떎.
-2. ?ㅽ뻾 以묒씠硫???thread瑜?留뚮뱾吏 ?딄퀬 already_running?쇰줈 ?앸궦??
-3. ?ㅽ뻾 以묒씠 ?꾨땲硫?NEXT_BATCH_LOG ?뚯씠釉붿쓣 ?앹꽦?쒕떎. auto_create_log_table=true??寃쎌슦.
-4. background daemon thread瑜??쒖옉?쒕떎.
-5. START 濡쒓렇瑜???ν븳??
-```
-
-### stop
+background thread 방식으로 배치 loop를 시작하고 즉시 반환한다.
 
 ```json
 {"action":"stop"}
 ```
 
-?숈옉:
-
-```text
-1. stop_event瑜?set?쒕떎.
-2. 湲?sleep 以묒씠?대룄 理쒕? 1珥??⑥쐞濡?源⑥뼱??stop ?붿껌???뺤씤?쒕떎.
-3. STOP_REQUESTED, STOPPED 濡쒓렇瑜???ν븳??
-```
-
-### status
+stop event를 set한다.
 
 ```json
 {"action":"status"}
 ```
 
-?숈옉:
+현재 실행 상태, run_id, loop_no, 마지막 event/job/error를 반환한다.
+
+## Plain Text 입력 매핑
 
 ```text
-?꾩옱 background thread ?곹깭, run_id, loop_no, 留덉?留?event, 留덉?留?job ?뺣낫瑜?諛섑솚?쒕떎.
+백그라운드 실행 -> {"action":"start"}
+백그라운드 에이전트 실행 -> {"action":"start"}
+배치 에이전트 시작 -> {"action":"start"}
+배치 시작 -> {"action":"start"}
+배치 멈춰 / 배치 중지 / 백그라운드 중지 -> {"action":"stop"}
+배치 상태 / 백그라운드 상태 -> {"action":"status"}
 ```
 
-??諛섑솚媛믪? Chat Output??瑗??곌껐???꾩슂???녿떎. Langflow ?ㅽ뻾 濡쒓렇???붾쾭源낆슜?쇰줈留??ъ슜?대룄 ?쒕떎.
+## Batch Loop 규칙
 
-## Batch Loop ?뺤콉
+한 cycle에서 job은 최대 1건만 처리한다.
 
-??cycle?먯꽌??job??理쒕? 1嫄대쭔 泥섎━?쒕떎.
-
-?곗꽑?쒖쐞:
-
-```text
+우선순위:
 1. DB_MIGRATION
 2. SQL_CONVERSION
 3. NO_JOB
-```
 
 Loop:
 
 ```text
 while stop_event is not set:
-  1. NEXT_MIG_INFO?먯꽌 pending migration job 1嫄?議고쉶
-  2. ?덉쑝硫?run_migration_job(map_id) ?ㅽ뻾
-  3. ?ㅽ뻾 寃곌낵瑜?NEXT_BATCH_LOG?????  4. job???ㅽ뻾?덉쑝硫?sleep ?놁씠 諛붾줈 ?ㅼ쓬 loop
+  1. NEXT_MIG_INFO에서 pending migration job 1건 조회
+  2. 있으면 run_migration_job(map_id) 실행
+  3. 결과를 NEXT_BATCH_LOG에 저장
+  4. job을 실행했으면 즉시 다음 loop
 
-  5. migration job???놁쑝硫?NEXT_SQL_INFO?먯꽌 pending SQL conversion job 1嫄?議고쉶
-  6. ?덉쑝硫?run_sql_conversion_job(space_nm, sql_id) ?ㅽ뻾
-  7. ?ㅽ뻾 寃곌낵瑜?NEXT_BATCH_LOG?????  8. job???ㅽ뻾?덉쑝硫?sleep ?놁씠 諛붾줈 ?ㅼ쓬 loop
+  5. migration job이 없으면 NEXT_SQL_INFO에서 pending SQL conversion job 1건 조회
+  6. 있으면 run_sql_conversion_job(space_nm, sql_id) 실행
+  7. 결과를 NEXT_BATCH_LOG에 저장
+  8. job을 실행했으면 즉시 다음 loop
 
-  9. ?????놁쑝硫?NO_JOB 濡쒓렇 ???  10. no_job_sleep_seconds 留뚰겮 ?湲?```
+  9. 둘 다 없으면 NO_JOB 로그 저장
+  10. no_job_sleep_seconds만큼 대기
+```
 
-湲곕낯 ?湲?
+기본 대기:
 
 ```text
-job ?ㅽ뻾?? 0珥?job ?놁쓬: 600珥?loop error: 60珥?```
+job 실행: 0초
+job 없음: 600초
+loop error: 60초
+```
 
-`no_job_sleep_seconds`? `error_sleep_seconds`??Langflow component input?먯꽌 議곗젙?쒕떎.
+## Pending Job 조건
 
-## Pending Job 議곌굔
-
-### DB Migration
+DB Migration:
 
 ```sql
 SELECT MAP_ID
@@ -172,15 +105,7 @@ WHERE UPPER(TRIM(NVL(USE_YN, 'N'))) = 'Y'
 ORDER BY PRIORITY ASC, MAP_ID ASC
 ```
 
-?ㅽ뻾:
-
-```json
-{"action":"run_migration_job","map_id":101}
-```
-
-Actual execution uses the internal `BatchAgentCommandTool._mig__run_migration_job()` function.
-
-### SQL Conversion
+SQL Conversion:
 
 ```sql
 SELECT SPACE_NM, SQL_ID
@@ -189,21 +114,11 @@ WHERE STATUS_CONVERSION IS NULL
 ORDER BY PRIORITY ASC NULLS LAST, UPD_TS NULLS FIRST, SPACE_NM, SQL_ID
 ```
 
-?ㅽ뻾:
-
-```json
-{"action":"run_sql_conversion_job","space_nm":"...","sql_id":"..."}
-```
-
-Actual execution uses the internal `BatchAgentCommandTool._sql_run_sql_conversion_job()` function.
-
 ## Batch Log Table
 
-諛곗튂 thread媛 ?댁븘 ?덈뒗吏, ?대뼡 loop?먯꽌 ?대뼡 job??泥섎━?덈뒗吏 蹂닿린 ?꾪븳 蹂꾨룄 濡쒓렇 ?뚯씠釉붿씠??
+`NEXT_BATCH_LOG`는 batch worker loop의 생존 여부와 cycle 처리 결과를 확인하기 위한 로그 테이블이다.
 
-湲곗〈 `NEXT_MIG_LOG`, `NEXT_SQL_LOG`??job ?대? ?④퀎 濡쒓렇?닿퀬, `NEXT_BATCH_LOG`??諛곗튂 worker loop 濡쒓렇??
-
-DDL:
+`NEXT_MIG_LOG`, `NEXT_SQL_LOG`는 job 내부 단계 로그이고, `NEXT_BATCH_LOG`는 배치 loop 자체의 로그다.
 
 ```sql
 CREATE TABLE NEXT_BATCH_LOG (
@@ -223,15 +138,7 @@ CREATE TABLE NEXT_BATCH_LOG (
 );
 ```
 
-Schema瑜??ъ슜?섎뒗 寃쎌슦:
-
-```sql
-CREATE TABLE {SYSTEM_SCHEMA}.NEXT_BATCH_LOG (...)
-```
-
-而댄룷?뚰듃 input `auto_create_log_table=true`?대㈃ `start` ?쒖젏???뚯씠釉??앹꽦???쒕룄?쒕떎. ?대? 議댁옱?섎㈃ 臾댁떆?쒕떎.
-
-## EVENT_TYPE
+주요 event:
 
 ```text
 START
@@ -245,9 +152,7 @@ STOP_REQUESTED
 STOPPED
 ```
 
-## ?댁쁺 議고쉶 SQL
-
-理쒓렐 濡쒓렇:
+최근 로그:
 
 ```sql
 SELECT *
@@ -256,31 +161,7 @@ ORDER BY LOG_ID DESC
 FETCH FIRST 100 ROWS ONLY;
 ```
 
-?꾩옱 ?ㅽ뻾 run??理쒓렐 濡쒓렇:
-
-```sql
-SELECT *
-FROM NEXT_BATCH_LOG
-WHERE RUN_ID = (
-    SELECT RUN_ID
-    FROM NEXT_BATCH_LOG
-    ORDER BY LOG_ID DESC
-    FETCH FIRST 1 ROW ONLY
-)
-ORDER BY LOG_ID DESC;
-```
-
-理쒓렐 NO_JOB ?뺤씤:
-
-```sql
-SELECT LOG_ID, RUN_ID, LOOP_NO, EVENT_TYPE, SLEEP_SECONDS, STARTED_AT, MESSAGE
-FROM NEXT_BATCH_LOG
-WHERE EVENT_TYPE = 'NO_JOB'
-ORDER BY LOG_ID DESC
-FETCH FIRST 20 ROWS ONLY;
-```
-
-理쒓렐 job ?ㅽ뻾 寃곌낵:
+최근 job 실행 결과:
 
 ```sql
 SELECT LOG_ID, RUN_ID, LOOP_NO, EVENT_TYPE, AGENT_NAME, JOB_ID, JOB_STATUS,
@@ -289,37 +170,4 @@ FROM NEXT_BATCH_LOG
 WHERE EVENT_TYPE IN ('JOB_SUCCESS', 'JOB_FAIL')
 ORDER BY LOG_ID DESC
 FETCH FIRST 50 ROWS ONLY;
-```
-
-## 二쇱쓽?ы빆
-
-Langflow 而⑦뀒?대꼫媛 ?ъ떆?묐릺硫?background thread??醫낅즺?쒕떎. 而⑦뀒?대꼫 ?ъ떆???꾩뿉???ㅼ떆 `{"action":"start"}`瑜??몄텧?댁빞 ?쒕떎.
-
-?꾩옱 ?ㅺ퀎??Langflow 而⑦뀒?대꼫 1媛?怨좎젙???꾩젣濡??쒕떎. 媛숈? Langflow 而⑦뀒?대꼫瑜??щ윭 媛?replica濡??꾩슦???댁쁺 援ъ“?먯꽌??Oracle 湲곕컲 distributed lock ?뚯씠釉붿씠 異붽?濡??꾩슂?섎떎.
-
-諛깃렇?쇱슫??諛곗튂媛 job???ㅽ뻾?섎뒗 ?숈븞 ?ъ슜?먭? 梨꾪똿??agent濡?媛숈? job???섎룞 ?ㅽ뻾?????덈떎. 湲곗〈 `run_migration_job`, `run_sql_conversion_job`? ?ㅽ뻾 吏곸쟾??DB ?곹깭瑜??ㅼ떆 ?뺤씤?섎?濡?湲곕낯 諛⑹뼱???덉?留? ?κ린?곸쑝濡쒕뒗 `RUNNING` ?좎젏 ?곹깭瑜?異붽??섎뒗 ?몄씠 ???덉쟾?섎떎.
-
-
-## Current Component Structure
-
-`batch_agent_command_tool.py` contains exactly one Langflow component class:
-
-```text
-class BatchAgentCommandTool(Component)
-```
-
-DB Migration and SQL Conversion business logic is implemented as internal functions inside that same class. There are no separate `MigrationCommandTool` or `SqlConversionCommandTool` classes in this file.
-
-Internal naming convention:
-
-```text
-_mig__*  : DB Migration logic copied into BatchAgentCommandTool
-_sql_*   : SQL Conversion logic copied into BatchAgentCommandTool
-```
-
-The batch loop calls these internal functions directly:
-
-```text
-_run_migration_job       -> _mig__run_migration_job
-_run_sql_conversion_job  -> _sql_run_sql_conversion_job
 ```
