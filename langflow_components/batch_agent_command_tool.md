@@ -9,10 +9,10 @@
 - `langflow_components/migration_command_tool.py`
 - `langflow_components/sql_conversion_command_tool.py`
 
-Langflow Custom Component ?고??꾩뿉?쒕뒗 ?ㅻⅨ custom component ?뚯씪 import媛 留됲엳嫄곕굹 寃쎈줈媛 留욎? ?딆쓣 ???덈떎.
-洹몃옒??諛곗튂 而댄룷?뚰듃 ?뚯씪 ?덉뿉 `MigrationCommandTool`, `SqlConversionCommandTool` 援ы쁽???④퍡 蹂듭궗???붾떎.
+Langflow Custom Component runtime may not reliably import other custom component files.
+For that reason, this file contains exactly one component class: `BatchAgentCommandTool`.
 
-諛곗튂 而댄룷?뚰듃媛 吏곸젒 ?대떦?섎뒗 寃껋? thread ?쒖뼱, polling, agent 遺꾧린, batch log ??μ씠怨? ?ㅼ젣 job ?ㅽ뻾? 媛숈? ?뚯씪 ?덉뿉 蹂듭궗??command tool ?대옒?ㅼ쓽 ?ㅽ뻾 ?⑥닔瑜??ъ슜?쒕떎.
+DB Migration and SQL Conversion business logic is implemented as internal functions inside `BatchAgentCommandTool`.
 
 ## ??븷 援щ텇
 
@@ -178,7 +178,7 @@ ORDER BY PRIORITY ASC, MAP_ID ASC
 {"action":"run_migration_job","map_id":101}
 ```
 
-?ㅼ젣 ?몄텧? `batch_agent_command_tool.py` ?덉뿉 蹂듭궗??`MigrationCommandTool._run_migration_job()`???ъ슜?쒕떎.
+Actual execution uses the internal `BatchAgentCommandTool._mig__run_migration_job()` function.
 
 ### SQL Conversion
 
@@ -195,7 +195,7 @@ ORDER BY PRIORITY ASC NULLS LAST, UPD_TS NULLS FIRST, SPACE_NM, SQL_ID
 {"action":"run_sql_conversion_job","space_nm":"...","sql_id":"..."}
 ```
 
-?ㅼ젣 ?몄텧? `batch_agent_command_tool.py` ?덉뿉 蹂듭궗??`SqlConversionCommandTool.run_sql_conversion_job()`???ъ슜?쒕떎.
+Actual execution uses the internal `BatchAgentCommandTool._sql_run_sql_conversion_job()` function.
 
 ## Batch Log Table
 
@@ -299,3 +299,27 @@ Langflow 而⑦뀒?대꼫媛 ?ъ떆?묐릺硫?background thread??醫낅즺?쒕
 
 諛깃렇?쇱슫??諛곗튂媛 job???ㅽ뻾?섎뒗 ?숈븞 ?ъ슜?먭? 梨꾪똿??agent濡?媛숈? job???섎룞 ?ㅽ뻾?????덈떎. 湲곗〈 `run_migration_job`, `run_sql_conversion_job`? ?ㅽ뻾 吏곸쟾??DB ?곹깭瑜??ㅼ떆 ?뺤씤?섎?濡?湲곕낯 諛⑹뼱???덉?留? ?κ린?곸쑝濡쒕뒗 `RUNNING` ?좎젏 ?곹깭瑜?異붽??섎뒗 ?몄씠 ???덉쟾?섎떎.
 
+
+## Current Component Structure
+
+`batch_agent_command_tool.py` contains exactly one Langflow component class:
+
+```text
+class BatchAgentCommandTool(Component)
+```
+
+DB Migration and SQL Conversion business logic is implemented as internal functions inside that same class. There are no separate `MigrationCommandTool` or `SqlConversionCommandTool` classes in this file.
+
+Internal naming convention:
+
+```text
+_mig__*  : DB Migration logic copied into BatchAgentCommandTool
+_sql_*   : SQL Conversion logic copied into BatchAgentCommandTool
+```
+
+The batch loop calls these internal functions directly:
+
+```text
+_run_migration_job       -> _mig__run_migration_job
+_run_sql_conversion_job  -> _sql_run_sql_conversion_job
+```
