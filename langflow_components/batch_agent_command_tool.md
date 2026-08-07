@@ -27,8 +27,8 @@ DB Migration과 SQL Conversion 업무 로직은 같은 class 내부 함수로 �
 동작:
 
 1. `NEXT_BATCH_CONTROL`의 `BATCH_AGENT` row를 `SELECT ... FOR UPDATE`로 잠근다.
-2. 현재 상태가 `RUNNING` 또는 `STOP_REQUESTED`이고 heartbeat가 살아 있으면 새 thread를 만들지 않고 `already_running` 또는 `stop_requested`를 반환한다.
-3. 실행 가능하면 `RUN_ID`를 새로 발급하고 control row를 `RUNNING`으로 변경한다.
+2. 현재 상태가 `RUNNING`이고 heartbeat가 살아 있으면 새 thread를 만들지 않고 `already_running`을 반환한다.
+3. 실행 가능하면 control row 한 건을 `RUNNING`으로 업데이트한다. `RUN_ID`는 로그 추적용 값이며 실행 제어 조건에는 사용하지 않는다.
 4. background thread를 시작하고 즉시 반환한다.
 
 ```json
@@ -38,11 +38,14 @@ DB Migration과 SQL Conversion 업무 로직은 같은 class 내부 함수로 �
 동작:
 
 1. 메모리 stop event를 set한다.
-2. `NEXT_BATCH_CONTROL.STOP_REQUESTED_YN = 'Y'`로 변경한다.
-3. worker loop는 loop 시작, sleep 중, job 내부 주요 단계 사이에서 stop 요청을 확인한다.
-4. 중단되면 현재 job 상태를 `STOPPED`로 저장하고 control row를 `STOPPED`로 변경한다.
+2. `NEXT_BATCH_CONTROL`의 단일 row를 `STOP_REQUESTED`로 업데이트하고 `STOP_REQUESTED_YN = 'Y'`로 변경한다.
+3. worker loop는 loop 시작, sleep 중, job 내부 주요 단계 사이에서 control row를 확인한다.
+4. control row가 `RUNNING`이 아니거나 `STOP_REQUESTED_YN = 'Y'`이면 현재 worker는 중단된다. 여러 worker가 떠 있어도 같은 row를 보므로 모두 같은 stop 신호를 받는다.
+5. 중단되면 현재 job 상태를 `STOPPED`로 저장하고 control row를 `STOPPED`로 변경한다.
 
 주의: thread 기반이므로 이미 실행 중인 Oracle SQL execute 또는 LLM HTTP 요청 자체를 즉시 kill하지는 못한다. 해당 호출이 반환되는 즉시 다음 단계로 가지 않고 중단된다.
+
+DB 연결 또는 `NEXT_BATCH_CONTROL` 조회/heartbeat 갱신이 실패하면 배치 worker는 fatal 상태로 판단하고 loop를 종료한다. 이때 DB가 살아 있으면 `NEXT_BATCH_LOG`에 `FATAL_ERROR`를 남긴다. DB 자체가 없으면 로그 저장도 실패할 수 있지만 loop는 계속 재시도하지 않는다.
 
 ```json
 {"action":"status"}
@@ -50,7 +53,7 @@ DB Migration과 SQL Conversion 업무 로직은 같은 class 내부 함수로 �
 
 동작:
 
-`NEXT_BATCH_CONTROL`의 상태, `RUN_ID`, heartbeat, loop/job 정보를 반환한다. 현재 LangFlow 호출에서 메모리 thread handle이 보이면 memory 상태도 함께 반환한다.
+`NEXT_BATCH_CONTROL`의 상태, heartbeat, loop/job 정보를 반환한다. 현재 LangFlow 호출에서 메모리 thread handle이 보이면 memory 상태도 함께 반환한다.
 
 ## NEXT_BATCH_CONTROL
 
@@ -87,7 +90,7 @@ INSERT INTO NEXT_BATCH_CONTROL (
 );
 ```
 
-컴포넌트는 row가 없으면 action 실행 중 초기 row insert를 시도한다. 테이블 자체는 미리 생성되어 있어야 한다.
+컴포넌트 action은 새 row를 만들지 않고 `CONTROL_NAME = 'BATCH_AGENT'` 한 row를 업데이트한다. 테이블과 초기 row는 미리 생성되어 있어야 한다.
 
 상태값:
 
@@ -96,6 +99,16 @@ RUNNING
 STOP_REQUESTED
 STOPPED
 ```
+
+제어 조건:
+
+```text
+CONTROL_NAME = 'BATCH_AGENT'
+AND STATUS = 'RUNNING'
+AND STOP_REQUESTED_YN = 'N'
+```
+
+`RUN_ID`는 `NEXT_BATCH_LOG` 조회와 실행 이력 구분을 위한 값이다. 배치 중지/실행 판단에는 사용하지 않는다.
 
 ## NEXT_BATCH_LOG
 
@@ -130,6 +143,7 @@ JOB_FAIL
 JOB_STOPPED
 NO_JOB
 LOOP_ERROR
+FATAL_ERROR
 STOP_REQUESTED
 STOPPED
 ```
@@ -137,6 +151,23 @@ STOPPED
 ## Batch Loop
 
 한 cycle에서는 job을 최대 1건만 처리한다.
+
+배치 loop는 기존 Supervisor 구조와 유사하게 LangChain tool calling을 사용한다.
+
+```text
+_worker_loop()
+  -> _run_batch_supervisor_cycle()
+      -> LLM.bind_tools([
+           poll_jobs,
+           run_data_migration,
+           run_sql_conversion,
+           no_job
+         ])
+      -> LLM이 이번 cycle의 tool을 선택
+      -> Python guard가 poll 우선, 한 cycle 1건 제한, stop/control check를 강제
+```
+
+tool calling이 실패하거나 LLM이 유효한 tool 결정을 만들지 못하면 기존 순차 로직으로 fallback하지 않는다. 실패를 숨기지 않기 위해 `LOOP_ERROR`를 기록하고 `error_sleep_seconds` 후 다음 loop에서 다시 시도한다.
 
 우선순위:
 

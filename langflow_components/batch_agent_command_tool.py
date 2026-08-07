@@ -21,10 +21,6 @@ from lfx.io import BoolInput, IntInput, MessageTextInput, SecretStrInput, StrInp
 from lfx.schema.data import Data
 
 
-class _BatchStopRequested(Exception):
-    """Raised inside the batch worker when a stop request should interrupt the current job."""
-
-
 class BatchAgentCommandTool(Component):
     display_name = "Batch Agent Command Tool"
     description = "Starts and controls a background SmartMigration batch loop inside the Langflow container."
@@ -159,11 +155,17 @@ class BatchAgentCommandTool(Component):
                 return {"ok": True, "status": "already_running", "running": True}
 
             run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
-            control_result = self._try_start_control(config, run_id)
+            control_result = self._start_control(config, run_id)
             if not control_result.get("acquired"):
                 existing_run_id = control_result.get("run_id")
                 self._write_batch_log_safe(config, existing_run_id, 0, "ALREADY_RUNNING", message=str(control_result.get("message") or "Batch agent is already running."))
-                return {"ok": True, "status": control_result.get("status") or "already_running", "running": True, **control_result}
+                control_status = str(control_result.get("control_status") or "").upper()
+                return {
+                    "ok": True,
+                    "status": control_result.get("status") or "already_running",
+                    "running": control_status == "RUNNING",
+                    **control_result,
+                }
 
             cls._stop_event.clear()
             cls._state.update(
@@ -214,7 +216,8 @@ class BatchAgentCommandTool(Component):
         state_alive = bool(state.get("running") and not cls._stop_event.is_set())
         control_status = self._get_control_status(config) if config else {}
         control_running = (
-            str(control_status.get("status") or "").upper() in {"RUNNING", "STOP_REQUESTED"}
+            str(control_status.get("status") or "").upper() == "RUNNING"
+            and not bool(control_status.get("stop_requested"))
             and bool(control_status.get("heartbeat_alive"))
         )
         state["running"] = bool(memory_alive or state_alive or control_running)
@@ -234,29 +237,7 @@ class BatchAgentCommandTool(Component):
             state["last_error"] = control_status.get("last_error") or state.get("last_error")
         return {"ok": True, **state}
 
-    def _ensure_control_row(self, config: dict[str, Any]) -> None:
-        table = self._qualify_table("NEXT_BATCH_CONTROL", config["system_schema"])
-        try:
-            with self._connect(config) as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    f"""
-                    INSERT INTO {table} (
-                        CONTROL_NAME, STATUS, STOP_REQUESTED_YN, LOOP_NO,
-                        UPDATED_AT, MESSAGE
-                    ) VALUES (
-                        'BATCH_AGENT', 'STOPPED', 'N', 0,
-                        CURRENT_TIMESTAMP, 'Initialized by batch agent action.'
-                    )
-                    """
-                )
-                conn.commit()
-        except Exception as exc:
-            if "ORA-00001" not in str(exc):
-                raise
-
-    def _try_start_control(self, config: dict[str, Any], run_id: str) -> dict[str, Any]:
-        self._ensure_control_row(config)
+    def _start_control(self, config: dict[str, Any], run_id: str) -> dict[str, Any]:
         table = self._qualify_table("NEXT_BATCH_CONTROL", config["system_schema"])
         grace_seconds = max(1, int(config.get("status_log_alive_grace_seconds") or 1800))
         with self._connect(config) as conn:
@@ -276,20 +257,30 @@ class BatchAgentCommandTool(Component):
             )
             row = cur.fetchone()
             if not row:
-                raise ValueError("NEXT_BATCH_CONTROL row BATCH_AGENT was not initialized")
+                raise ValueError("NEXT_BATCH_CONTROL row BATCH_AGENT is required. Initialize one row before starting the batch agent.")
 
             status = self._to_text(row[0]).strip().upper()
             existing_run_id = self._to_text(row[1])
             heartbeat_alive = bool(row[4])
-            if status in {"RUNNING", "STOP_REQUESTED"} and heartbeat_alive:
+            if status == "RUNNING" and heartbeat_alive:
                 conn.rollback()
                 return {
                     "acquired": False,
-                    "status": "already_running" if status == "RUNNING" else "stop_requested",
+                    "status": "already_running",
                     "control_status": status,
                     "run_id": existing_run_id,
                     "heartbeat_alive": heartbeat_alive,
                     "message": f"Batch control is {status} for RUN_ID={existing_run_id}.",
+                }
+            if status == "STOP_REQUESTED" and heartbeat_alive:
+                conn.rollback()
+                return {
+                    "acquired": False,
+                    "status": "stop_requested",
+                    "control_status": status,
+                    "run_id": existing_run_id,
+                    "heartbeat_alive": heartbeat_alive,
+                    "message": "Batch stop is still being processed. Start again after status becomes STOPPED.",
                 }
 
             cur.execute(
@@ -318,7 +309,6 @@ class BatchAgentCommandTool(Component):
         return {"acquired": True, "status": "started", "run_id": run_id, "heartbeat_alive": True}
 
     def _request_stop_control(self, config: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_control_row(config)
         table = self._qualify_table("NEXT_BATCH_CONTROL", config["system_schema"])
         with self._connect(config) as conn:
             cur = conn.cursor()
@@ -332,14 +322,17 @@ class BatchAgentCommandTool(Component):
             )
             row = cur.fetchone()
             if not row:
-                raise ValueError("NEXT_BATCH_CONTROL row BATCH_AGENT was not initialized")
+                raise ValueError("NEXT_BATCH_CONTROL row BATCH_AGENT is required.")
             status = self._to_text(row[0]).strip().upper()
             run_id = self._to_text(row[1])
             loop_no = int(row[2] or 0)
             cur.execute(
                 f"""
                 UPDATE {table}
-                SET STATUS = CASE WHEN STATUS = 'RUNNING' THEN 'STOP_REQUESTED' ELSE STATUS END,
+                SET STATUS = CASE
+                        WHEN STATUS = 'RUNNING' THEN 'STOP_REQUESTED'
+                        ELSE STATUS
+                    END,
                     STOP_REQUESTED_YN = 'Y',
                     STOP_REQUESTED_AT = CURRENT_TIMESTAMP,
                     UPDATED_AT = CURRENT_TIMESTAMP,
@@ -352,7 +345,6 @@ class BatchAgentCommandTool(Component):
         return {"ok": True, "previous_status": status, "status": "STOP_REQUESTED", "run_id": run_id, "loop_no": loop_no}
 
     def _get_control_status(self, config: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_control_row(config)
         table = self._qualify_table("NEXT_BATCH_CONTROL", config["system_schema"])
         grace_seconds = max(1, int(config.get("status_log_alive_grace_seconds") or 1800))
         sql = f"""
@@ -427,7 +419,8 @@ class BatchAgentCommandTool(Component):
                         LAST_ERROR = :6,
                         MESSAGE = :7
                     WHERE CONTROL_NAME = 'BATCH_AGENT'
-                      AND RUN_ID = :8
+                      AND STATUS = 'RUNNING'
+                      AND NVL(STOP_REQUESTED_YN, 'N') = 'N'
                     """,
                     [
                         int(loop_no or 0),
@@ -437,12 +430,15 @@ class BatchAgentCommandTool(Component):
                         str(job_status or "")[:50] if job_status else None,
                         str(last_error or "")[:3900] if last_error else None,
                         str(message or "")[:1000] if message else None,
-                        str(run_id or ""),
                     ],
                 )
+                if cur.rowcount == 0:
+                    raise InterruptedError("Batch control is not RUNNING.")
                 conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            if isinstance(exc, InterruptedError):
+                raise
+            raise ConnectionError(f"Failed to update NEXT_BATCH_CONTROL heartbeat: {exc}") from exc
 
     def _finish_control(self, config: dict[str, Any], run_id: str, message: str) -> None:
         table = self._qualify_table("NEXT_BATCH_CONTROL", config["system_schema"])
@@ -460,9 +456,9 @@ class BatchAgentCommandTool(Component):
                         LAST_EVENT = 'STOPPED',
                         MESSAGE = :1
                     WHERE CONTROL_NAME = 'BATCH_AGENT'
-                      AND RUN_ID = :2
+                      AND STATUS = 'STOP_REQUESTED'
                     """,
-                    [message, str(run_id or "")],
+                    [message],
                 )
                 conn.commit()
         except Exception:
@@ -472,35 +468,50 @@ class BatchAgentCommandTool(Component):
         control_status = self._get_control_status(config)
         return self._to_text(control_status.get("run_id")) or None
 
-    def _is_db_stop_requested(self, config: dict[str, Any], run_id: str) -> bool:
-        if not run_id:
-            return False
+    def _is_db_stop_requested(self, config: dict[str, Any], run_id: str | None = None) -> bool:
         table = self._qualify_table("NEXT_BATCH_CONTROL", config["system_schema"])
         sql = f"""
             SELECT COUNT(*)
             FROM {table}
             WHERE CONTROL_NAME = 'BATCH_AGENT'
-              AND RUN_ID = :1
               AND (
                     STOP_REQUESTED_YN = 'Y'
                  OR STATUS = 'STOP_REQUESTED'
               )
         """
         try:
-            rows = self._query(config, sql, [run_id])
-        except Exception:
+            rows = self._query(config, sql)
+        except Exception as exc:
+            raise ConnectionError(f"Failed to read NEXT_BATCH_CONTROL stop state: {exc}") from exc
+        if not rows:
             return False
+        return int(rows[0][0] or 0) > 0
+
+    def _is_control_running(self, config: dict[str, Any], run_id: str | None = None) -> bool:
+        table = self._qualify_table("NEXT_BATCH_CONTROL", config["system_schema"])
+        sql = f"""
+            SELECT COUNT(*)
+            FROM {table}
+            WHERE CONTROL_NAME = 'BATCH_AGENT'
+              AND STATUS = 'RUNNING'
+              AND NVL(STOP_REQUESTED_YN, 'N') = 'N'
+        """
+        try:
+            rows = self._query(config, sql)
+        except Exception as exc:
+            raise ConnectionError(f"Failed to read NEXT_BATCH_CONTROL running state: {exc}") from exc
         if not rows:
             return False
         return int(rows[0][0] or 0) > 0
 
     def _raise_if_batch_stop_requested(self) -> None:
         config = getattr(self, "_batch_runtime_config", None)
-        run_id = str((config or {}).get("batch_run_id") or "").strip()
         if self.__class__._stop_event.is_set():
-            raise _BatchStopRequested("Batch stop requested.")
-        if config and run_id and self._is_db_stop_requested(config, run_id):
-            raise _BatchStopRequested("Batch stop requested.")
+            raise InterruptedError("Batch stop requested.")
+        if config and not self._is_control_running(config):
+            raise InterruptedError("Batch control is not RUNNING.")
+        if config and self._is_db_stop_requested(config):
+            raise InterruptedError("Batch stop requested.")
 
     @classmethod
     def _worker_loop(cls, config: dict[str, Any], run_id: str) -> None:
@@ -508,7 +519,27 @@ class BatchAgentCommandTool(Component):
         config = {**config, "batch_run_id": run_id}
         helper._batch_runtime_config = config
         try:
-            while not cls._stop_event.is_set() and not helper._is_db_stop_requested(config, run_id):
+            while True:
+                if cls._stop_event.is_set():
+                    break
+                try:
+                    if not helper._is_control_running(config, run_id):
+                        break
+                except ConnectionError as exc:
+                    with cls._state_lock:
+                        cls._state["running"] = False
+                        cls._state["last_event"] = "FATAL_ERROR"
+                        cls._state["last_error"] = str(exc)
+                        cls._state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                    helper._write_batch_log_safe(
+                        config,
+                        run_id,
+                        int(cls._state.get("loop_no") or 0),
+                        "FATAL_ERROR",
+                        message="Batch worker stopped because control DB access failed.",
+                        error_message=str(exc),
+                    )
+                    break
                 with cls._state_lock:
                     cls._state["loop_no"] = int(cls._state.get("loop_no") or 0) + 1
                     loop_no = int(cls._state["loop_no"])
@@ -518,11 +549,11 @@ class BatchAgentCommandTool(Component):
                 started = time.perf_counter()
                 helper._update_control_heartbeat(config, run_id, loop_no, "LOOP_START", message="Batch loop started.")
                 helper._write_batch_log_safe(config, run_id, loop_no, "LOOP_START", message="Batch loop started.")
-                if helper._is_db_stop_requested(config, run_id):
+                if not helper._is_control_running(config, run_id):
                     break
 
                 try:
-                    result = helper._execute_one_job(config)
+                    result = helper._run_batch_supervisor_cycle(config)
                     elapsed = round(time.perf_counter() - started, 3)
                     event_type = "JOB_SUCCESS" if result.get("job_executed") else "NO_JOB"
                     if str(result.get("status") or "").strip().upper() == "STOPPED":
@@ -568,7 +599,7 @@ class BatchAgentCommandTool(Component):
                     if sleep_seconds > 0:
                         helper._interruptible_sleep(sleep_seconds, config, run_id)
 
-                except _BatchStopRequested as exc:
+                except InterruptedError as exc:
                     elapsed = round(time.perf_counter() - started, 3)
                     with cls._state_lock:
                         cls._state["last_event"] = "JOB_STOPPED"
@@ -581,6 +612,24 @@ class BatchAgentCommandTool(Component):
                         loop_no,
                         "JOB_STOPPED",
                         message=str(exc),
+                        elapsed_seconds=elapsed,
+                    )
+                    break
+
+                except ConnectionError as exc:
+                    elapsed = round(time.perf_counter() - started, 3)
+                    with cls._state_lock:
+                        cls._state["running"] = False
+                        cls._state["last_event"] = "FATAL_ERROR"
+                        cls._state["last_error"] = str(exc)
+                        cls._state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                    helper._write_batch_log_safe(
+                        config,
+                        run_id,
+                        loop_no,
+                        "FATAL_ERROR",
+                        message="Batch worker stopped because control DB access failed.",
+                        error_message=str(exc),
                         elapsed_seconds=elapsed,
                     )
                     break
@@ -657,6 +706,182 @@ class BatchAgentCommandTool(Component):
             "message": "No pending migration or SQL conversion job found.",
             "error": None,
         }
+
+    def _run_batch_supervisor_cycle(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Run one batch supervisor cycle with LangChain tool calling.
+
+        The LLM chooses one of the internal tools, but Python still enforces:
+        poll first, at most one job execution per cycle, and DB control stop checks.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+        from langchain_core.tools import tool
+        from langchain_openai import ChatOpenAI
+
+        self._batch_runtime_config = config
+        self._raise_if_batch_stop_requested()
+
+        poll_state: dict[str, Any] = {"called": False, "migration_job": None, "sql_job": None}
+        cycle_result: dict[str, Any] | None = None
+
+        def _json(data: dict[str, Any]) -> str:
+            return json.dumps(data, ensure_ascii=False, default=str)
+
+        @tool
+        def poll_jobs() -> str:
+            """Poll pending DB migration and SQL conversion jobs for this batch cycle."""
+            self._raise_if_batch_stop_requested()
+            migration_job = self._poll_next_migration_job(config)
+            sql_job = None if migration_job else self._poll_next_sql_conversion_job(config)
+            poll_state.update(
+                {
+                    "called": True,
+                    "migration_job": migration_job,
+                    "sql_job": sql_job,
+                }
+            )
+            return _json(
+                {
+                    "ok": True,
+                    "migration_jobs": [migration_job] if migration_job else [],
+                    "sql_jobs": [sql_job] if sql_job else [],
+                    "rule": "Run one DB migration job first. If no DB migration job exists, run one SQL conversion job.",
+                }
+            )
+
+        @tool
+        def run_data_migration(map_id: int) -> str:
+            """Run one DB migration job by map_id."""
+            nonlocal cycle_result
+            self._raise_if_batch_stop_requested()
+            if cycle_result is not None and cycle_result.get("job_executed"):
+                return _json({"ok": False, "status": "SKIP", "message": "A job already ran in this cycle."})
+            if not poll_state.get("called"):
+                return _json({"ok": False, "status": "SKIP", "message": "poll_jobs must be called before run_data_migration."})
+            selected = poll_state.get("migration_job") or {}
+            selected_map_id = int(selected.get("map_id") or 0)
+            if int(map_id) != selected_map_id:
+                return _json({"ok": False, "status": "SKIP", "message": f"map_id={map_id} is not the selected migration job."})
+            result = self._run_migration_job(config, int(map_id))
+            cycle_result = {
+                "job_executed": True,
+                "ok": bool(result.get("ok")),
+                "agent": "DB_MIGRATION",
+                "job_id": str(map_id),
+                "status": result.get("status"),
+                "message": result.get("message") or "Migration job finished.",
+                "error": result.get("error"),
+                "supervisor_tool": "run_data_migration",
+            }
+            return _json(cycle_result)
+
+        @tool
+        def run_sql_conversion(space_nm: str, sql_id: str) -> str:
+            """Run one SQL conversion job by space_nm and sql_id."""
+            nonlocal cycle_result
+            self._raise_if_batch_stop_requested()
+            if cycle_result is not None and cycle_result.get("job_executed"):
+                return _json({"ok": False, "status": "SKIP", "message": "A job already ran in this cycle."})
+            if not poll_state.get("called"):
+                return _json({"ok": False, "status": "SKIP", "message": "poll_jobs must be called before run_sql_conversion."})
+            if poll_state.get("migration_job"):
+                return _json({"ok": False, "status": "SKIP", "message": "DB migration has priority over SQL conversion."})
+            selected = poll_state.get("sql_job") or {}
+            selected_space = str(selected.get("space_nm") or "")
+            selected_sql_id = str(selected.get("sql_id") or "")
+            if str(space_nm) != selected_space or str(sql_id) != selected_sql_id:
+                return _json({"ok": False, "status": "SKIP", "message": "Requested SQL job is not the selected pending SQL conversion job."})
+            result = self._run_sql_conversion_job(config, selected_space, selected_sql_id)
+            cycle_result = {
+                "job_executed": True,
+                "ok": bool(result.get("ok")),
+                "agent": "SQL_CONVERSION",
+                "job_id": f"{selected_space}/{selected_sql_id}",
+                "status": result.get("status"),
+                "message": result.get("message") or "SQL conversion job finished.",
+                "error": result.get("error"),
+                "supervisor_tool": "run_sql_conversion",
+            }
+            return _json(cycle_result)
+
+        @tool
+        def no_job() -> str:
+            """Finish this cycle when no pending job exists."""
+            nonlocal cycle_result
+            self._raise_if_batch_stop_requested()
+            if not poll_state.get("called"):
+                return _json({"ok": False, "status": "SKIP", "message": "poll_jobs must be called before no_job."})
+            if poll_state.get("migration_job") or poll_state.get("sql_job"):
+                return _json({"ok": False, "status": "SKIP", "message": "A pending job exists. Run it instead of no_job."})
+            cycle_result = {
+                "job_executed": False,
+                "ok": True,
+                "agent": None,
+                "job_id": None,
+                "status": "NO_JOB",
+                "message": "No pending migration or SQL conversion job found.",
+                "error": None,
+                "supervisor_tool": "no_job",
+            }
+            return _json(cycle_result)
+
+        tools = [poll_jobs, run_data_migration, run_sql_conversion, no_job]
+        tool_by_name = {t.name: t for t in tools}
+        llm_kwargs: dict[str, Any] = {
+            "model": config["llm_model"],
+            "api_key": config["llm_api_key"],
+            "max_tokens": config["llm_max_tokens"],
+            "timeout": config["llm_timeout_seconds"],
+            "temperature": 0,
+        }
+        if config.get("llm_base_url"):
+            llm_kwargs["base_url"] = config["llm_base_url"]
+        llm = ChatOpenAI(**llm_kwargs).bind_tools(tools)
+
+        messages: list[Any] = [
+            SystemMessage(
+                content=(
+                    "You are the SmartMigration batch supervisor. "
+                    "Call poll_jobs first. Then call exactly one of these tools: "
+                    "run_data_migration, run_sql_conversion, or no_job. "
+                    "DB migration has priority over SQL conversion. "
+                    "Never call more than one job execution tool in one cycle."
+                )
+            ),
+            HumanMessage(content="Start one batch cycle now."),
+        ]
+
+        for _ in range(4):
+            self._raise_if_batch_stop_requested()
+            response = llm.invoke(messages)
+            messages.append(response)
+            tool_calls = getattr(response, "tool_calls", None) or []
+            if not tool_calls:
+                break
+            for call in tool_calls:
+                name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
+                args = call.get("args") if isinstance(call, dict) else getattr(call, "args", {})
+                call_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+                selected_tool = tool_by_name.get(str(name))
+                if not selected_tool:
+                    content = _json({"ok": False, "error": f"Unknown tool: {name}"})
+                else:
+                    content = selected_tool.invoke(args or {})
+                messages.append(ToolMessage(content=str(content), tool_call_id=str(call_id or name)))
+                if cycle_result is not None:
+                    return cycle_result
+
+        if poll_state.get("called") and not poll_state.get("migration_job") and not poll_state.get("sql_job"):
+            return {
+                "job_executed": False,
+                "ok": True,
+                "agent": None,
+                "job_id": None,
+                "status": "NO_JOB",
+                "message": "No pending migration or SQL conversion job found.",
+                "error": None,
+                "supervisor_tool": "poll_jobs",
+            }
+        raise RuntimeError("Batch supervisor did not produce a valid tool decision.")
 
     def _run_migration_job(self, config: dict[str, Any], map_id: int) -> dict[str, Any]:
         self._apply_config(config)
@@ -775,6 +1000,14 @@ class BatchAgentCommandTool(Component):
     def _ensure_runtime_dependencies(self, config: dict[str, Any]) -> None:
         missing_packages: list[str] = []
         try:
+            import langchain_core
+        except ModuleNotFoundError:
+            missing_packages.append("langchain-core")
+        try:
+            import langchain_openai
+        except ModuleNotFoundError:
+            missing_packages.append("langchain-openai")
+        try:
             import langchain_community
         except ModuleNotFoundError:
             missing_packages.append("langchain-community")
@@ -885,7 +1118,9 @@ class BatchAgentCommandTool(Component):
         while time.time() < deadline:
             if self.__class__._stop_event.is_set():
                 break
-            if config and run_id and self._is_db_stop_requested(config, run_id):
+            if config and not self._is_control_running(config, run_id):
+                break
+            if config and self._is_db_stop_requested(config, run_id):
                 break
             time.sleep(min(1.0, max(0.0, deadline - time.time())))
 
@@ -1525,7 +1760,7 @@ class BatchAgentCommandTool(Component):
                         steps.append({"step": "execute_mig_sql", "attempt": attempt, **self._mig__summary_result(mig_exec_result)})
                         mig_executed = True
                         self._raise_if_batch_stop_requested()
-                    except _BatchStopRequested:
+                    except InterruptedError:
                         raise
                     except Exception as exc:
                         last_failure = {"status": "FAIL-INSERT", "error": str(exc)}
@@ -1610,7 +1845,7 @@ class BatchAgentCommandTool(Component):
                         if attempt < max_attempts:
                             continue
                         break
-                    except _BatchStopRequested:
+                    except InterruptedError:
                         raise
                     except Exception as exc:
                         last_failure = {"status": "FAIL-TEST", "error": str(exc)}
@@ -1644,7 +1879,7 @@ class BatchAgentCommandTool(Component):
                 "retry_count": last_retry_count,
                 "steps": steps,
             }
-        except _BatchStopRequested as exc:
+        except InterruptedError as exc:
             elapsed = int(time.perf_counter() - started)
             self._mig__save_final_sql(map_id, last_mig_sql, last_verify_sql)
             self._mig__update_job_status(map_id, "STOPPED", elapsed, last_retry_count)
@@ -2765,7 +3000,7 @@ class BatchAgentCommandTool(Component):
                         try:
                             to_sql_result = self._sql__generate_to_sql(space_nm, sql_id, last_error=last_failure.get("error", ""))
                             self._raise_if_batch_stop_requested()
-                        except _BatchStopRequested:
+                        except InterruptedError:
                             raise
                         except Exception as exc:
                             to_sql_result = {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": "FAIL-TOBE", "error": str(exc), "db_updated": False}
@@ -2825,7 +3060,7 @@ class BatchAgentCommandTool(Component):
                             bind_sql_executed = True
                             self._sql__write_log(sql_id, space_nm, "BIND_SET", "PASS", "EXECUTE_BIND_SQL", "BIND_SQL executed", retry_count, last_bind_set, int(time.perf_counter() - started))
                             self._raise_if_batch_stop_requested()
-                    except _BatchStopRequested:
+                    except InterruptedError:
                         raise
                     except Exception as exc:
                         last_failure = {"status": "FAIL-BIND", "error": str(exc)}
@@ -2887,7 +3122,7 @@ class BatchAgentCommandTool(Component):
                         if attempt < max_attempts:
                             continue
                         break
-                    except _BatchStopRequested:
+                    except InterruptedError:
                         raise
                     except Exception as exc:
                         last_failure = {"status": "FAIL-TEST", "error": str(exc)}
@@ -2903,7 +3138,7 @@ class BatchAgentCommandTool(Component):
             self._sql__update_job_status(sql_id, space_nm, final_status, elapsed, last_retry_count)
             self._sql__write_log(sql_id, space_nm, "ERROR", "FAIL", "FINAL", str(last_failure.get("error") or "Max attempts reached")[:3900], last_retry_count, last_test_sql or last_bind_sql or last_to_sql, elapsed)
             return {"ok": False, "space_nm": space_nm, "sql_id": sql_id, "status": final_status, "error": last_failure.get("error") or "Max attempts reached", "elapsed_seconds": elapsed, "retry_count": last_retry_count, "steps": steps}
-        except _BatchStopRequested as exc:
+        except InterruptedError as exc:
             elapsed = int(time.perf_counter() - started)
             self._sql__save_final_sql(sql_id, space_nm, last_to_sql, last_bind_sql, last_bind_set, last_test_sql)
             self._sql__update_job_status(sql_id, space_nm, "STOPPED", elapsed, last_retry_count)
