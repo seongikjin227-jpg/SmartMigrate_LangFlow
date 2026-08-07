@@ -28,8 +28,8 @@
         "Do not add target_schema to DUAL, CTE names, inline view aliases, table aliases, or subquery aliases.",
         "Do not split dynamic SQL into multiple separate SQL statements. Preserve it as one Oracle/MyBatis SQL template.",
         "Return only one executable Oracle/MyBatis SQL template. Do not include explanations, markdown, JSON, PL/SQL blocks, multiple SQL statements, or a trailing semicolon.",
-        "correct_sql_hint_json is a JSON array of up to 2 previously verified TOBE_CORRECT_SQL examples searched from similar FR SQL. Use them only as hints.",
-        "When correct_sql_hint_json conflicts with current from_sql, mapping_schema_text, target_schema, or last_error, current inputs take priority."
+        "correct_sql_hint_json is deprecated and may be an empty JSON array. Do not assume any separate correct SQL column exists.",
+        "Current from_sql, mapping_schema_text, target_schema, and last_error are the only authoritative inputs."
     ],
     "user_instruction": "Apply the rules in priority order and return exactly one Oracle/MyBatis TO-BE SQL template."
 }

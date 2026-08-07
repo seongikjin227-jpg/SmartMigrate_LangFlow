@@ -38,7 +38,7 @@
     "tobe_sql의 물리 테이블은 기존 schema가 있더라도 제거하고 tobe_schema.TABLE_NAME 형태로 다시 붙인다.",
     "CTE 이름, inline view alias, subquery alias, table alias, DUAL에는 schema를 붙이지 않는다.",
     "[Correct SQL 힌트]",
-    "correct_sql_hint_json은 과거 TEST_CORRECT_SQL 예시이다. validation SQL 구성 방식과 count 비교 패턴을 참고하기 위한 힌트로만 사용한다.",
+    "correct_sql_hint_json is deprecated and is normally an empty JSON array. Do not assume any separate correct SQL column exists.",
     "final retry에서는 correct_sql_hint_json에 동적 태그 평가 예시가 있더라도 동적 태그를 평가하지 않고 제거하는 규칙을 우선한다.",
     "최종 Test SQL은 반드시 현재 from_sql, tobe_sql, from_schema, tobe_schema, bind_set_json, last_error, 위 규칙을 기준으로 생성한다.",
     "[기간/현재일 조건 제거]",

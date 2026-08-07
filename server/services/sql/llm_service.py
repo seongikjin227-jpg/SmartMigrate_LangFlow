@@ -23,7 +23,6 @@ from server.core.logger import logger
 from server.repositories.sql.log_repository import insert_sql_log
 from server.services.sql.domain_models import MappingRuleItem, SqlInfoJob
 from server.services.sql.prompt_service import build_prompt_messages
-from server.services.sql.correct_sql_rag_service import correct_sql_hint_rag_service
 from server.services.sql.tobe_sql_tuning_service import tobe_sql_tuning_service
 
 
@@ -373,15 +372,6 @@ def serialize_conversion_examples_for_prompt(conversion_examples: list[dict[str,
     return json.dumps(compact_examples, ensure_ascii=False, indent=2)
 
 
-def serialize_correct_sql_hints_for_prompt(hints: list[dict[str, object]]) -> str:
-    correct_sqls = [
-        str(hint.get("correct_sql", "")).strip()
-        for hint in hints
-        if isinstance(hint, dict) and str(hint.get("correct_sql", "")).strip()
-    ]
-    return json.dumps(correct_sqls, ensure_ascii=False, indent=2)
-
-
 def _build_sql_messages(template_name: str, **payload: str) -> list[dict[str, str]]:
     return build_prompt_messages(template_name, **payload)
 
@@ -503,7 +493,7 @@ def _call_tuning_llm_for_job(
             space_nm=job.space_nm if job else None,
             sql_id=job.sql_id if job else None,
             sql_info_rowid=job.row_id if job else None,
-            sql_kind="TUNED_SQL",
+            sql_kind="TUNED_TO_SQL",
             sql_content=tuned_sql,
             status="SUCCESS",
             prompt_name=prompt_name,
@@ -532,7 +522,7 @@ def _call_tuning_llm_for_job(
             space_nm=job.space_nm if job else None,
             sql_id=job.sql_id if job else None,
             sql_info_rowid=job.row_id if job else None,
-            sql_kind="TUNED_SQL",
+            sql_kind="TUNED_TO_SQL",
             sql_content=None,
             status="FAIL",
             prompt_name=prompt_name,
@@ -821,13 +811,6 @@ def generate_tobe_sql(
     )
     _increment_prompt_rag_hits(conversion_examples)
 
-    correct_sql_hint_json = "[]"
-    correct_sql_hints = correct_sql_hint_rag_service.retrieve_correct_sql_hints(
-        sql_text=job.source_sql,
-        correct_kind="TOBE",
-        current_row_id=job.row_id,
-    )
-    correct_sql_hint_json = serialize_correct_sql_hints_for_prompt(correct_sql_hints)
     return _call_llm_for_job(
         job=job,
         sql_kind="TOBE_SQL",
@@ -838,7 +821,7 @@ def generate_tobe_sql(
             from_sql=job.source_sql,
             mapping_schema_text=mapping_schema_text,
             target_schema=_schema_env("ORACLE_SCHEMA_TGT") or "UNKNOWN",
-            correct_sql_hint_json=correct_sql_hint_json,
+            correct_sql_hint_json="[]",
             last_error=last_error or "None",
         ),
     )
@@ -887,11 +870,6 @@ def generate_bind_sql(
     source_sql = bind_source_sql or job.source_sql
     scoped_rules = _select_mapping_rules_for_job(job=job, mapping_rules=mapping_rules or [])
     asis_source_filter_conditions = _serialize_asis_source_filter_conditions(scoped_rules)
-    correct_sql_hints = correct_sql_hint_rag_service.retrieve_correct_sql_hints(
-        sql_text=job.source_sql,
-        correct_kind="BIND",
-        current_row_id=job.row_id,
-    )
     return _call_llm_for_job(
         job=job,
         sql_kind="BIND_SQL",
@@ -902,7 +880,7 @@ def generate_bind_sql(
             from_sql=source_sql,
             from_schema=_schema_env("ORACLE_SCHEMA_SRC") or "UNKNOWN",
             asis_source_filter_conditions=asis_source_filter_conditions,
-            correct_sql_hint_json=serialize_correct_sql_hints_for_prompt(correct_sql_hints),
+            correct_sql_hint_json="[]",
             last_error=last_error or "None",
         ),
     )
@@ -1010,11 +988,6 @@ def generate_test_sql(
     bind_set_json: str,
     last_error: str | None = None,
 ) -> str:
-    correct_sql_hints = correct_sql_hint_rag_service.retrieve_correct_sql_hints(
-        sql_text=job.source_sql,
-        correct_kind="TEST",
-        current_row_id=job.row_id,
-    )
     return _generate_validation_test_sql(
         from_sql=job.source_sql,
         tobe_sql=tobe_sql,
@@ -1023,7 +996,7 @@ def generate_test_sql(
         tobe_schema=_schema_env("ORACLE_SCHEMA_TGT"),
         last_error=last_error,
         final_retry_mode=_is_final_retry_mode(last_error),
-        correct_sql_hint_json=serialize_correct_sql_hints_for_prompt(correct_sql_hints),
+        correct_sql_hint_json="[]",
         job=job,
         sql_kind="TEST_SQL",
     )

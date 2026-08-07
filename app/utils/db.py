@@ -129,6 +129,31 @@ def _optional_column_expr(column_name: str, available_columns: set[str], data_ty
     return f"CAST(NULL AS {data_type}) AS {column}"
 
 
+def _preferred_column(available_columns: set[str], preferred: str, fallback: str | None = None) -> str:
+    preferred_column = preferred.upper()
+    if preferred_column in available_columns:
+        return preferred_column
+    if fallback:
+        fallback_column = fallback.upper()
+        if fallback_column in available_columns:
+            return fallback_column
+    return preferred_column
+
+
+def _optional_alias_expr(
+    available_columns: set[str],
+    preferred: str,
+    alias: str,
+    data_type: str = "VARCHAR2(4000)",
+    fallback: str | None = None,
+) -> str:
+    column = _preferred_column(available_columns, preferred, fallback)
+    alias_column = alias.upper()
+    if column in available_columns:
+        return f"{column} AS {alias_column}"
+    return f"CAST(NULL AS {data_type}) AS {alias_column}"
+
+
 _SQL_CONVERSION_STATUS_COLUMN = "STATUS_CONVERSION"
 _SQL_TUNING_STATUS_COLUMN = "STATUS_TUNING"
 
@@ -245,11 +270,13 @@ def get_recent_fails(limit: int = 10) -> list[dict]:
 
 def get_tuning_status_summary() -> dict[str, int]:
     """Tuning status summary for converted SQL rows."""
+    available_columns = _get_available_columns(SQL_TABLE)
     tuned_status_column = _SQL_TUNING_STATUS_COLUMN
+    to_sql_column = _preferred_column(available_columns, "TO_SQL", "TO_SQL_TEXT")
     q = f"""
         SELECT NVL(TO_CHAR({tuned_status_column}), 'NULL'), COUNT(*)
         FROM {SQL_TABLE}
-        WHERE TO_SQL_TEXT IS NOT NULL
+        WHERE {to_sql_column} IS NOT NULL
         GROUP BY {tuned_status_column}
     """
     try:
@@ -300,40 +327,44 @@ def get_sql_jobs() -> list[dict]:
     available_columns = _get_available_columns(SQL_TABLE)
     status_column = _SQL_CONVERSION_STATUS_COLUMN
     tuned_status_column = _SQL_TUNING_STATUS_COLUMN
+    fr_sql_column = _preferred_column(available_columns, "FR_SQL", "FR_SQL_TEXT")
+    to_sql_column = _preferred_column(available_columns, "TO_SQL", "TO_SQL_TEXT")
+    fr_sql_select = f"{fr_sql_column} AS FR_SQL"
+    to_sql_select = f"{to_sql_column} AS TO_SQL"
     target_table_column = _optional_column_expr("TARGET_TABLE", available_columns)
     edit_fr_sql_column = _optional_column_expr("EDIT_FR_SQL", available_columns)
-    tuned_sql_column = _optional_column_expr("TUNED_SQL", available_columns)
+    tuned_sql_column = _optional_alias_expr(available_columns, "TUNED_TO_SQL", "TUNED_TO_SQL", data_type="CLOB", fallback="TUNED_SQL")
     tuned_test_column = _sql_status_expr(tuned_status_column, "STATUS_TUNING")
     tuned_result_column = _optional_column_expr("TUNED_RESULT", available_columns)
     formatted_sql_column = _optional_column_expr("FORMATTED_SQL", available_columns)
     block_rag_column = _optional_column_expr("BLOCK_RAG_CONTENT", available_columns)
-    tobe_correct_column = _optional_column_expr("TOBE_CORRECT_SQL", available_columns)
-    bind_correct_column = _optional_column_expr("BIND_CORRECT_SQL", available_columns)
-    test_correct_column = _optional_column_expr("TEST_CORRECT_SQL", available_columns)
+    user_edited_column = _optional_column_expr("USER_EDITED", available_columns)
     sql_length_column = _optional_column_expr("SQL_LENGTH", available_columns)
     map_type_column = _optional_column_expr("MAP_TYPE", available_columns)
     priority_column = _optional_column_expr("PRIORITY", available_columns, data_type="NUMBER")
+    retry_count_column = _optional_column_expr("RETRY_COUNT", available_columns, data_type="NUMBER")
     edit_len_expr = "DBMS_LOB.GETLENGTH(EDIT_FR_SQL)" if "EDIT_FR_SQL" in available_columns else "0"
-    tuned_len_expr = "DBMS_LOB.GETLENGTH(TUNED_SQL)" if "TUNED_SQL" in available_columns else "0"
+    tuned_len_column = _preferred_column(available_columns, "TUNED_TO_SQL", "TUNED_SQL")
+    tuned_len_expr = f"DBMS_LOB.GETLENGTH({tuned_len_column})" if tuned_len_column in available_columns else "0"
     formatted_len_expr = "DBMS_LOB.GETLENGTH(FORMATTED_SQL)" if "FORMATTED_SQL" in available_columns else "0"
 
     q = f"""
         SELECT ROWIDTOCHAR(ROWID) AS ROW_ID,
                TAG_KIND, SPACE_NM, SQL_ID,
-               FR_SQL_TEXT, {edit_fr_sql_column}, {target_table_column},
-               TO_SQL_TEXT, {tuned_sql_column}, {tuned_test_column}, {tuned_result_column},
+               {fr_sql_select}, {edit_fr_sql_column}, {target_table_column},
+               {to_sql_select}, {tuned_sql_column}, {tuned_test_column}, {tuned_result_column},
                 {formatted_sql_column}, {block_rag_column},
-                {tobe_correct_column}, {bind_correct_column}, {test_correct_column},
-                {sql_length_column}, {map_type_column}, {priority_column},
-               DBMS_LOB.GETLENGTH(FR_SQL_TEXT) AS FR_SQL_LEN,
+                {user_edited_column},
+                {sql_length_column}, {map_type_column}, {priority_column}, {retry_count_column},
+               DBMS_LOB.GETLENGTH({fr_sql_column}) AS FR_SQL_LEN,
                {edit_len_expr} AS EDIT_FR_SQL_LEN,
                CASE
                    WHEN NVL({edit_len_expr}, 0) > 0
                    THEN {edit_len_expr}
-                   ELSE DBMS_LOB.GETLENGTH(FR_SQL_TEXT)
+                   ELSE DBMS_LOB.GETLENGTH({fr_sql_column})
                END AS EFFECTIVE_FR_SQL_LEN,
-               DBMS_LOB.GETLENGTH(TO_SQL_TEXT) AS TO_SQL_LEN,
-               {tuned_len_expr} AS TUNED_SQL_LEN,
+               DBMS_LOB.GETLENGTH({to_sql_column}) AS TO_SQL_LEN,
+               {tuned_len_expr} AS TUNED_TO_SQL_LEN,
                {formatted_len_expr} AS FORMATTED_SQL_LEN,
                {_sql_status_expr(status_column, "STATUS_CONVERSION")}, LOG, TO_CHAR(UPD_TS) AS UPD_TS
         FROM {SQL_TABLE}
@@ -362,7 +393,19 @@ def get_sql_status_summary() -> dict[str, int]:
 
 def get_sql_length_success_summary(short_limit: int = 5000) -> dict[str, dict[str, int]]:
     """Return SQL conversion PASS/FAIL success base split by effective SQL length."""
+    available_columns = _get_available_columns(SQL_TABLE)
     status_column = _SQL_CONVERSION_STATUS_COLUMN
+    fr_sql_column = _preferred_column(available_columns, "FR_SQL", "FR_SQL_TEXT")
+    edit_condition = (
+        """
+                     AND (
+                         EDIT_FR_SQL IS NULL
+                         OR NVL(DBMS_LOB.GETLENGTH(EDIT_FR_SQL), 0) <= :1
+                     )
+        """
+        if "EDIT_FR_SQL" in available_columns
+        else ""
+    )
     q = f"""
         SELECT LENGTH_GROUP,
                SUM(CASE WHEN UPPER(TRIM(STATUS_CONVERSION)) IN ({_sql_in(CONVERSION_PASS_STATUSES)}) THEN 1 ELSE 0 END) AS PASS_COUNT,
@@ -370,11 +413,8 @@ def get_sql_length_success_summary(short_limit: int = 5000) -> dict[str, dict[st
         FROM (
             SELECT
                 CASE
-                    WHEN NVL(DBMS_LOB.GETLENGTH(FR_SQL_TEXT), 0) <= :1
-                     AND (
-                         EDIT_FR_SQL IS NULL
-                         OR NVL(DBMS_LOB.GETLENGTH(EDIT_FR_SQL), 0) <= :1
-                     )
+                    WHEN NVL(DBMS_LOB.GETLENGTH({fr_sql_column}), 0) <= :1
+                     {edit_condition}
                     THEN 'SHORT'
                     ELSE 'LONG'
                 END AS LENGTH_GROUP,
@@ -646,6 +686,8 @@ def reset_sql_conversion_job(sql_id: str, space_nm: str | None = None) -> int:
     params: list = []
     if "BATCH_CNT" in available_columns:
         set_clauses.insert(1, "BATCH_CNT = 0")
+    if "RETRY_COUNT" in available_columns:
+        set_clauses.insert(1, "RETRY_COUNT = 0")
     if next_priority is not None:
         params.append(next_priority)
         set_clauses.insert(1, f"PRIORITY = :{len(params)}")
@@ -685,6 +727,8 @@ def reset_sql_tuning_job(sql_id: str, space_nm: str | None = None) -> int:
     params: list = []
     if "BATCH_CNT" in available_columns:
         set_clauses.insert(1, "BATCH_CNT = 0")
+    if "RETRY_COUNT" in available_columns:
+        set_clauses.insert(1, "RETRY_COUNT = 0")
     if next_priority is not None:
         params.append(next_priority)
         set_clauses.insert(1, f"PRIORITY = :{len(params)}")
@@ -752,6 +796,7 @@ def get_sql_conversion_failure_analysis_rows(limit: int = 200) -> list[dict]:
     available_columns = _get_available_columns(SQL_TABLE)
     status_column = _SQL_CONVERSION_STATUS_COLUMN
     tuned_status_column = _SQL_TUNING_STATUS_COLUMN
+    fr_sql_column = _preferred_column(available_columns, "FR_SQL", "FR_SQL_TEXT")
     map_kind_column = "TO_CHAR(MAP_KIND) AS MAP_KIND" if "MAP_KIND" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS MAP_KIND"
     map_type_column = "TO_CHAR(MAP_TYPE) AS MAP_TYPE" if "MAP_TYPE" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS MAP_TYPE"
     tag_kind_column = "TO_CHAR(TAG_KIND) AS TAG_KIND" if "TAG_KIND" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS TAG_KIND"
@@ -767,12 +812,12 @@ def get_sql_conversion_failure_analysis_rows(limit: int = 200) -> list[dict]:
                    {tag_kind_column},
                    {map_type_column},
                    {sql_length_column} AS SQL_LENGTH,
-                   DBMS_LOB.GETLENGTH(FR_SQL_TEXT) AS FR_SQL_LEN,
+                   DBMS_LOB.GETLENGTH({fr_sql_column}) AS FR_SQL_LEN,
                    {edit_len_expr} AS EDIT_FR_SQL_LEN,
                    CASE
                        WHEN NVL({edit_len_expr}, 0) > 0
                     THEN {edit_len_expr}
-                    ELSE DBMS_LOB.GETLENGTH(FR_SQL_TEXT)
+                    ELSE DBMS_LOB.GETLENGTH({fr_sql_column})
                 END AS EFFECTIVE_SQL_LEN,
                     {_sql_status_expr(status_column, "STATUS_CONVERSION")},
                     {_sql_status_expr(tuned_status_column, "STATUS_TUNING")},
@@ -798,11 +843,14 @@ def get_sql_tuning_failure_analysis_rows(limit: int = 200) -> list[dict]:
     available_columns = _get_available_columns(SQL_TABLE)
     status_column = _SQL_CONVERSION_STATUS_COLUMN
     tuned_status_column = _SQL_TUNING_STATUS_COLUMN
+    fr_sql_column = _preferred_column(available_columns, "FR_SQL", "FR_SQL_TEXT")
+    to_sql_column = _preferred_column(available_columns, "TO_SQL", "TO_SQL_TEXT")
     map_kind_column = "TO_CHAR(MAP_KIND) AS MAP_KIND" if "MAP_KIND" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS MAP_KIND"
     map_type_column = "TO_CHAR(MAP_TYPE) AS MAP_TYPE" if "MAP_TYPE" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS MAP_TYPE"
     tag_kind_column = "TO_CHAR(TAG_KIND) AS TAG_KIND" if "TAG_KIND" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS TAG_KIND"
     sql_length_column = "SQL_LENGTH" if "SQL_LENGTH" in available_columns else "CAST(NULL AS NUMBER)"
-    tuned_len_expr = "DBMS_LOB.GETLENGTH(TUNED_SQL)" if "TUNED_SQL" in available_columns else "0"
+    tuned_len_column = _preferred_column(available_columns, "TUNED_TO_SQL", "TUNED_SQL")
+    tuned_len_expr = f"DBMS_LOB.GETLENGTH({tuned_len_column})" if tuned_len_column in available_columns else "0"
 
     q = f"""
         SELECT *
@@ -813,9 +861,9 @@ def get_sql_tuning_failure_analysis_rows(limit: int = 200) -> list[dict]:
                    {tag_kind_column},
                    {map_type_column},
                    {sql_length_column} AS SQL_LENGTH,
-                    DBMS_LOB.GETLENGTH(FR_SQL_TEXT) AS FR_SQL_LEN,
-                    DBMS_LOB.GETLENGTH(TO_SQL_TEXT) AS TO_SQL_LEN,
-                    {tuned_len_expr} AS TUNED_SQL_LEN,
+                    DBMS_LOB.GETLENGTH({fr_sql_column}) AS FR_SQL_LEN,
+                    DBMS_LOB.GETLENGTH({to_sql_column}) AS TO_SQL_LEN,
+                    {tuned_len_expr} AS TUNED_TO_SQL_LEN,
                     {_sql_status_expr(status_column, "STATUS_CONVERSION")},
                     {_sql_status_expr(tuned_status_column, "STATUS_TUNING")},
                     LOG,
@@ -971,20 +1019,22 @@ def get_sql_job_full(row_id: str) -> dict | None:
     available_columns = _get_available_columns(SQL_TABLE)
     status_column = _SQL_CONVERSION_STATUS_COLUMN
     tuned_status_column = _SQL_TUNING_STATUS_COLUMN
-    tobe_correct_column = _optional_column_expr("TOBE_CORRECT_SQL", available_columns)
-    bind_correct_column = _optional_column_expr("BIND_CORRECT_SQL", available_columns)
-    test_correct_column = _optional_column_expr("TEST_CORRECT_SQL", available_columns)
-    tuned_sql_column = _optional_column_expr("TUNED_SQL", available_columns)
+    fr_sql_select = f"{_preferred_column(available_columns, 'FR_SQL', 'FR_SQL_TEXT')} AS FR_SQL"
+    to_sql_select = f"{_preferred_column(available_columns, 'TO_SQL', 'TO_SQL_TEXT')} AS TO_SQL"
+    user_edited_column = _optional_column_expr("USER_EDITED", available_columns)
+    tuned_sql_column = _optional_alias_expr(available_columns, "TUNED_TO_SQL", "TUNED_TO_SQL", data_type="CLOB", fallback="TUNED_SQL")
     tuned_result_column = _optional_column_expr("TUNED_RESULT", available_columns)
+    retry_count_column = _optional_column_expr("RETRY_COUNT", available_columns, data_type="NUMBER")
     q = f"""
         SELECT ROWIDTOCHAR(ROWID) AS ROW_ID,
                TAG_KIND, SPACE_NM, SQL_ID,
-               FR_SQL_TEXT, EDIT_FR_SQL, TARGET_TABLE,
-               TO_SQL_TEXT, {tuned_sql_column}, {_sql_status_expr(tuned_status_column, "STATUS_TUNING")}, {tuned_result_column},
+               {fr_sql_select}, EDIT_FR_SQL, TARGET_TABLE,
+               {to_sql_select}, {tuned_sql_column}, {_sql_status_expr(tuned_status_column, "STATUS_TUNING")}, {tuned_result_column},
                BIND_SQL, BIND_SET, TEST_SQL,
                FORMATTED_SQL, BLOCK_RAG_CONTENT,
-               {tobe_correct_column}, {bind_correct_column}, {test_correct_column},
-               {_sql_status_expr(status_column, "STATUS_CONVERSION")}, LOG, TO_CHAR(UPD_TS) AS UPD_TS
+               {user_edited_column},
+               {_sql_status_expr(status_column, "STATUS_CONVERSION")}, LOG, TO_CHAR(UPD_TS) AS UPD_TS,
+               {retry_count_column}
         FROM {SQL_TABLE}
         WHERE ROWIDTOCHAR(ROWID) = :1
     """
@@ -1001,39 +1051,41 @@ def get_sql_job_full(row_id: str) -> dict | None:
     return None
 
 
-def update_sql_correct_sql(row_id: str, correct_kind: str, correct_sql: str) -> tuple[bool, str]:
-    column_map = {
-        "TOBE": "TOBE_CORRECT_SQL",
-        "BIND": "BIND_CORRECT_SQL",
-        "TEST": "TEST_CORRECT_SQL",
-    }
-    kind = (correct_kind or "").strip().upper()
-    column = column_map.get(kind)
-    if not column:
-        return False, "지원하지 않는 Correct SQL 유형입니다."
-
+def update_sql_user_edited_sql(row_id: str, sql_kind: str, sql_text: str) -> tuple[bool, str]:
     try:
         available_columns = _get_available_columns(SQL_TABLE)
     except Exception as exc:
         return False, f"컬럼 정보를 조회하지 못했습니다: {exc}"
 
+    column_map = {
+        "TOBE": _preferred_column(available_columns, "TO_SQL", "TO_SQL_TEXT"),
+        "BIND": "BIND_SQL",
+        "TEST": "TEST_SQL",
+    }
+    kind = (sql_kind or "").strip().upper()
+    column = column_map.get(kind)
+    if not column:
+        return False, "지원하지 않는 SQL 유형입니다."
     if column not in available_columns:
         return False, f"{SQL_TABLE} 테이블에 {column} 컬럼이 없습니다."
+    if "USER_EDITED" not in available_columns:
+        return False, f"{SQL_TABLE} 테이블에 USER_EDITED 컬럼이 없습니다."
 
     q = f"""
         UPDATE {SQL_TABLE}
         SET {column} = :1,
+            USER_EDITED = 'Y',
             UPD_TS = CURRENT_TIMESTAMP
         WHERE ROWIDTOCHAR(ROWID) = :2
     """
     try:
         with get_connection() as conn:
             cur = conn.cursor()
-            cur.execute(q, (correct_sql, row_id))
+            cur.execute(q, (sql_text, row_id))
             rowcount = cur.rowcount
             conn.commit()
             if rowcount <= 0:
                 return False, "대상 SQL Job을 찾지 못했습니다."
-            return True, f"{column} 저장 완료"
+            return True, f"{column} 저장 완료, USER_EDITED=Y"
     except Exception as exc:
         return False, str(exc)

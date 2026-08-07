@@ -115,7 +115,7 @@ def _classify_fail_stage(row: dict, agent: str) -> str:
     if "TUNING" in agent_key:
         patterns = [
             ("TUNING_TEST", ["STATUS_TUNING", "TEST_VALIDATION", "VALIDATION_FAIL", "BASELINE_COUNT", "TUNED_COUNT"]),
-            ("TUNING_SQL_GENERATION", ["TUNED_SQL", "GENERATE_TUNED_SQL", "TUNING_ERROR"]),
+            ("TUNING_SQL_GENERATION", ["TUNED_TO_SQL", "GENERATE_TUNED_SQL", "TUNING_ERROR"]),
             ("TUNING_LLM_RESPONSE", ["LLM", "MODEL", "JSON", "RESPONSE", "PARSE"]),
             ("TUNING_BIND_OR_PARAM", ["BIND", "ORA-01008", "ORA-01036"]),
             ("TUNING_DB_EXECUTION", ["ORA-", "SQL EXEC", "DATABASE", "QUERY"]),
@@ -1176,7 +1176,7 @@ def _length_success_html(length_summary: dict[str, dict[str, int]]) -> str:
           <div class="rate-sub">{long_pass}/{long_base}건</div>
         </div>
       </div>
-      <div class="rate-note">Length 기준: FR_SQL_TEXT ≤ 5000 and (EDIT_FR_SQL ≤ 5000 or EDIT_FR_SQL is NULL)</div>
+      <div class="rate-note">Length 기준: FR_SQL ≤ 5000 and (EDIT_FR_SQL ≤ 5000 or EDIT_FR_SQL is NULL)</div>
     """
 
 def _counter_markdown(title: str, items: list[dict], total: int):

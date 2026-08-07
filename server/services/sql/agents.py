@@ -84,19 +84,18 @@ class TobeSqlGenerationAgent:
 
     def generate(self, state: JobExecutionState) -> None:
         state.failure_status = FAIL_TOBE
-        correct_sql = self._correct_sql(getattr(state.job, "tobe_correct_sql", None))
-        if correct_sql:
-            state.tobe_sql = correct_sql
+        if self._is_user_edited(state.job) and self._saved_sql(getattr(state.job, "to_sql_text", None)):
+            state.tobe_sql = self._saved_sql(getattr(state.job, "to_sql_text", None))
             self._log_sql_execution(
                 state=state,
                 sql_kind="TOBE_SQL",
                 sql_content=state.tobe_sql,
                 status="SUCCESS",
-                stage_name="USE_TOBE_CORRECT_SQL",
+                stage_name="USE_USER_EDITED_TO_SQL",
                 elapsed_seconds=0,
             )
             logger.info(
-                f"[{self.name}] ({state.job_key}) stage=USE_TOBE_CORRECT_SQL "
+                f"[{self.name}] ({state.job_key}) stage=USE_USER_EDITED_TO_SQL "
                 f"completed (sql_length={len(state.tobe_sql)})"
             )
             return
@@ -113,14 +112,13 @@ class TobeSqlGenerationAgent:
 
     def validate(self, state: JobExecutionState) -> None:
         state.failure_status = FAIL_BIND
-        correct_bind_sql = self._correct_sql(getattr(state.job, "bind_correct_sql", None))
         bind_param_names = (
             extract_bind_param_names(state.job.source_sql)
             or extract_bind_param_names(state.tobe_sql)
-            or extract_bind_param_names(correct_bind_sql)
         )
         state.bind_param_names = bind_param_names
-        if not bind_param_names and not correct_bind_sql:
+        saved_bind_sql = self._saved_sql(getattr(state.job, "bind_sql", None)) if self._is_user_edited(state.job) else ""
+        if not bind_param_names and not saved_bind_sql:
             state.bind_sql = ""
             state.bind_set_for_db = None
             state.bind_set_json_for_test = "[{}]"
@@ -134,18 +132,18 @@ class TobeSqlGenerationAgent:
                 )
 
             bind_source_sql = self._prepare_bind_source_sql(state)
-            if correct_bind_sql:
-                state.bind_sql = correct_bind_sql
+            if saved_bind_sql:
+                state.bind_sql = saved_bind_sql
                 self._log_sql_execution(
                     state=state,
                     sql_kind="BIND_SQL",
                     sql_content=state.bind_sql,
                     status="SUCCESS",
-                    stage_name="USE_BIND_CORRECT_SQL",
+                    stage_name="USE_USER_EDITED_BIND_SQL",
                     elapsed_seconds=0,
                 )
                 logger.info(
-                    f"[{self.name}] ({state.job_key}) stage=USE_BIND_CORRECT_SQL "
+                    f"[{self.name}] ({state.job_key}) stage=USE_USER_EDITED_BIND_SQL "
                     f"completed (sql_length={len(state.bind_sql)})"
                 )
             else:
@@ -206,19 +204,19 @@ class TobeSqlGenerationAgent:
                 "enabled (template=test_sql_final_retry_prompt.json)"
             )
 
-        correct_test_sql = self._correct_sql(getattr(state.job, "test_correct_sql", None))
-        if correct_test_sql:
-            state.test_sql = correct_test_sql
+        saved_test_sql = self._saved_sql(getattr(state.job, "test_sql", None)) if self._is_user_edited(state.job) else ""
+        if saved_test_sql:
+            state.test_sql = saved_test_sql
             self._log_sql_execution(
                 state=state,
                 sql_kind="TEST_SQL",
                 sql_content=state.test_sql,
                 status="SUCCESS",
-                stage_name="USE_TEST_CORRECT_SQL",
+                stage_name="USE_USER_EDITED_TEST_SQL",
                 elapsed_seconds=0,
             )
             logger.info(
-                f"[{self.name}] ({state.job_key}) stage=USE_TEST_CORRECT_SQL "
+                f"[{self.name}] ({state.job_key}) stage=USE_USER_EDITED_TEST_SQL "
                 f"completed (sql_length={len(state.test_sql)})"
             )
         else:
@@ -268,9 +266,12 @@ class TobeSqlGenerationAgent:
 
 
     @staticmethod
-    def _correct_sql(value: str | None) -> str:
+    def _saved_sql(value: str | None) -> str:
         return (value or "").strip()
 
+    @staticmethod
+    def _is_user_edited(job) -> bool:
+        return (getattr(job, "user_edited", "") or "").strip().upper() == "Y"
 
     def _prepare_bind_source_sql(self, state: JobExecutionState) -> str:
         original_sql = state.job.source_sql or ""
@@ -570,7 +571,7 @@ class TobeMultiAgentCoordinator:
 
                 tag_kind = (job.tag_kind or "").strip().upper()
                 if tag_kind != "SELECT":
-                    self._complete_non_select_job(state, tag_kind)
+                    self._complete_non_select_job(state, tag_kind, retry_count=retry_count)
                     return CONVERSION_PASS
 
                 if state.status != "PASS":
@@ -586,7 +587,7 @@ class TobeMultiAgentCoordinator:
                         continue
                     break
 
-                self._persist_success(state)
+                self._persist_success(state, retry_count=retry_count)
                 return CONVERSION_PASS
 
             except LLMRateLimitError as exc:
@@ -640,8 +641,8 @@ class TobeMultiAgentCoordinator:
         )
 
     @staticmethod
-    def _persist_success(state: JobExecutionState) -> None:
-        final_log = f"FINAL SUCCESS stage=COMPLETED status={state.status} job={state.job_key}"
+    def _persist_success(state: JobExecutionState, retry_count: int) -> None:
+        final_log = f"FINAL SUCCESS stage=COMPLETED status={state.status} retry_count={retry_count} job={state.job_key}"
         update_cycle_result(
             row_id=state.job.row_id,
             tobe_sql=state.tobe_sql,
@@ -654,6 +655,7 @@ class TobeMultiAgentCoordinator:
             status=CONVERSION_PASS if state.status == "PASS" else (state.failure_status or FAIL_TEST),
             final_log=final_log,
             formatted_sql=state.formatted_sql or None,
+            retry_count=retry_count,
         )
         logger.info(f"[TobeMultiAgentCoordinator] ({state.job_key}) completed successfully.")
 
@@ -674,14 +676,15 @@ class TobeMultiAgentCoordinator:
             test_sql=state.test_sql,
             status=state.failure_status or FAIL_TOBE,
             final_log=final_log,
+            retry_count=retry_count,
         )
         logger.error(f"[TobeMultiAgentCoordinator] ({state.job_key}) failed after retries: {state.last_error}")
 
     @staticmethod
-    def _complete_non_select_job(state: JobExecutionState, tag_kind: str) -> None:
+    def _complete_non_select_job(state: JobExecutionState, tag_kind: str, retry_count: int) -> None:
         final_log = (
             f"FINAL SUCCESS stage=COMPLETED status={CONVERSION_PASS} "
-            f"job={state.job_key} reason=TAG_KIND:{tag_kind or 'UNKNOWN'}"
+            f"retry_count={retry_count} job={state.job_key} reason=TAG_KIND:{tag_kind or 'UNKNOWN'}"
         )
         update_cycle_result(
             row_id=state.job.row_id,
@@ -695,6 +698,7 @@ class TobeMultiAgentCoordinator:
             status=CONVERSION_PASS,
             final_log=final_log,
             formatted_sql=state.formatted_sql or None,
+            retry_count=retry_count,
         )
         logger.info(
             f"[TobeMultiAgentCoordinator] ({state.job_key}) stage=SKIP_TEST_FOR_NON_SELECT "

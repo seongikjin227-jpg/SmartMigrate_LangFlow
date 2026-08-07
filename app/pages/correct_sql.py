@@ -1,37 +1,47 @@
 import pandas as pd
 import streamlit as st
 
-from utils.db import get_sql_job_full, get_sql_jobs, update_sql_correct_sql
+from utils.db import get_sql_job_full, get_sql_jobs, update_sql_user_edited_sql
 
 
-ALL = "전체"
+ALL = "All"
 
 _SQL_VIEW_OPTIONS = {
-    "ASIS SQL": "FR_SQL_TEXT",
-    "EDIT ASIS SQL": "EDIT_FR_SQL",
-    "TOBE SQL": "TO_SQL_TEXT",
+    "FR_SQL": "FR_SQL",
+    "EDIT_FR_SQL": "EDIT_FR_SQL",
+    "TO_SQL": "TO_SQL",
     "BIND SQL": "BIND_SQL",
     "BIND SET": "BIND_SET",
     "TEST SQL": "TEST_SQL",
-    "TUNED SQL": "TUNED_SQL",
+    "TUNED_TO_SQL": "TUNED_TO_SQL",
     "TUNED RESULT": "TUNED_RESULT",
     "FORMATTED SQL": "FORMATTED_SQL",
-    "TOBE CORRECT SQL": "TOBE_CORRECT_SQL",
-    "BIND CORRECT SQL": "BIND_CORRECT_SQL",
-    "TEST CORRECT SQL": "TEST_CORRECT_SQL",
+    "USER_EDITED": "USER_EDITED",
     "LOG": "LOG",
 }
 
-_CORRECT_KIND_OPTIONS = {
-    "TOBE Correct SQL": ("TOBE", "TOBE_CORRECT_SQL"),
-    "BIND Correct SQL": ("BIND", "BIND_CORRECT_SQL"),
-    "TEST Correct SQL": ("TEST", "TEST_CORRECT_SQL"),
+_USER_SQL_OPTIONS = {
+    "TO_SQL": ("TOBE", "TO_SQL"),
+    "BIND SQL": ("BIND", "BIND_SQL"),
+    "TEST SQL": ("TEST", "TEST_SQL"),
 }
 
 
 def _prepare_df(rows: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
-    for col in ("ROW_ID", "SQL_ID", "SPACE_NM", "STATUS_CONVERSION", "STATUS_TUNING", "PRIORITY", "MAP_TYPE", "TARGET_TABLE", "LOG"):
+    for col in (
+        "ROW_ID",
+        "SQL_ID",
+        "SPACE_NM",
+        "STATUS_CONVERSION",
+        "STATUS_TUNING",
+        "PRIORITY",
+        "MAP_TYPE",
+        "TARGET_TABLE",
+        "USER_EDITED",
+        "RETRY_COUNT",
+        "LOG",
+    ):
         if col not in df.columns:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str)
@@ -55,29 +65,31 @@ def _job_label(row: pd.Series) -> str:
         f"{row.get('SPACE_NM') or '-'} / {row.get('SQL_ID') or '-'} "
         f"| STATUS_CONVERSION={row.get('STATUS_CONVERSION') or 'NULL'} "
         f"| STATUS_TUNING={row.get('STATUS_TUNING') or 'NULL'} "
+        f"| USER_EDITED={row.get('USER_EDITED') or 'N'} "
+        f"| RETRY={row.get('RETRY_COUNT') or '0'} "
         f"| PRIORITY={row.get('PRIORITY') or '-'}"
     )
 
 
 def render():
-    st.title("Correct SQL Manager")
+    st.title("User Edited SQL Manager")
 
-    if st.button("새로고침"):
+    if st.button("Refresh"):
         st.rerun()
 
     try:
         jobs = get_sql_jobs()
     except Exception as exc:
-        st.error(f"DB 연결 실패: {exc}")
+        st.error(f"DB connection failed: {exc}")
         return
 
     if not jobs:
-        st.info("SQL Job 데이터가 없습니다.")
+        st.info("No SQL jobs found.")
         return
 
     df_all = _prepare_df(jobs)
 
-    with st.expander("검색 / 필터", expanded=True):
+    with st.expander("Search / Filter", expanded=True):
         c1, c2, c3, c4 = st.columns([1.4, 1.4, 1, 1])
         with c1:
             sql_id_query = st.text_input("SQL_ID LIKE")
@@ -86,24 +98,24 @@ def render():
         with c3:
             sel_status = st.selectbox("STATUS_CONVERSION", _options(df_all, "STATUS_CONVERSION"))
         with c4:
-            sel_tuned = st.selectbox("STATUS_TUNING", _options(df_all, "STATUS_TUNING"))
+            sel_user_edited = st.selectbox("USER_EDITED", _options(df_all, "USER_EDITED"))
 
     df = df_all.copy()
     df = df[_contains(df["SQL_ID"], sql_id_query)]
     df = df[_contains(df["SPACE_NM"], namespace_query)]
     if sel_status != ALL:
         df = df[df["STATUS_CONVERSION"] == sel_status]
-    if sel_tuned != ALL:
-        df = df[df["STATUS_TUNING"] == sel_tuned]
+    if sel_user_edited != ALL:
+        df = df[df["USER_EDITED"] == sel_user_edited]
 
     if df.empty:
-        st.warning("조건에 맞는 SQL Job이 없습니다.")
+        st.warning("No SQL jobs match the current filters.")
         return
 
-    st.caption(f"검색 결과 {len(df)}건 / 전체 {len(df_all)}건")
+    st.caption(f"Rows: {len(df)} / {len(df_all)}")
     records = df.to_dict("records")
     selected_idx = st.selectbox(
-        "SQL Job 선택",
+        "SQL Job",
         range(len(records)),
         format_func=lambda i: _job_label(pd.Series(records[i])),
     )
@@ -118,30 +130,30 @@ def render():
     with m3:
         st.metric("STATUS_CONVERSION", detail.get("STATUS_CONVERSION") or "-")
     with m4:
-        st.metric("STATUS_TUNING", detail.get("STATUS_TUNING") or "-")
+        st.metric("USER_EDITED", detail.get("USER_EDITED") or "N")
 
     st.divider()
 
     left, right = st.columns(2)
     view_labels = list(_SQL_VIEW_OPTIONS.keys())
     with left:
-        st.subheader("컬럼 보기")
-        view_label = st.selectbox("왼쪽 컬럼", view_labels, index=0)
-        st.code(detail.get(_SQL_VIEW_OPTIONS[view_label]) or "(없음)", language="sql")
+        st.subheader("Current Columns")
+        view_label = st.selectbox("View column", view_labels, index=0)
+        st.code(detail.get(_SQL_VIEW_OPTIONS[view_label]) or "(empty)", language="sql")
 
     with right:
-        st.subheader("Correct SQL 입력")
-        correct_label = st.selectbox("저장 대상", list(_CORRECT_KIND_OPTIONS.keys()))
-        correct_kind, correct_column = _CORRECT_KIND_OPTIONS[correct_label]
-        current_value = detail.get(correct_column) or ""
-        correct_sql = st.text_area(
-            "Correct SQL",
+        st.subheader("Save User Edited SQL")
+        edit_label = st.selectbox("Target SQL", list(_USER_SQL_OPTIONS.keys()))
+        sql_kind, sql_column = _USER_SQL_OPTIONS[edit_label]
+        current_value = detail.get(sql_column) or ""
+        sql_text = st.text_area(
+            "SQL",
             value=current_value,
             height=420,
-            placeholder="검증된 Correct SQL을 입력하세요.",
+            placeholder="Enter the SQL to preserve as user-edited output.",
         )
-        if st.button("Correct SQL 저장", type="primary", width="stretch"):
-            ok, message = update_sql_correct_sql(row_id, correct_kind, correct_sql)
+        if st.button("Save and Mark USER_EDITED", type="primary", width="stretch"):
+            ok, message = update_sql_user_edited_sql(row_id, sql_kind, sql_text)
             if ok:
                 st.success(message)
                 st.rerun()

@@ -60,8 +60,8 @@ def format_sql_fields_for_storage(
 ) -> dict[str, str | None]:
     """Format SQL result fields using the shared storage guide."""
     return {
-        "TO_SQL_TEXT": format_sql_for_storage(tobe_sql),
-        "TUNED_SQL": format_sql_for_storage(tuned_sql) if tuned_sql is not None else None,
+        "TO_SQL": format_sql_for_storage(tobe_sql),
+        "TUNED_TO_SQL": format_sql_for_storage(tuned_sql) if tuned_sql is not None else None,
         "BIND_SQL": format_sql_for_storage(bind_sql),
         "TEST_SQL": format_sql_for_storage(test_sql),
     }

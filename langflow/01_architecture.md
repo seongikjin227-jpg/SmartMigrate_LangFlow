@@ -459,7 +459,7 @@ _start()
 _stop()
 _status()
 _worker_loop()
-_execute_one_job()
+_run_batch_supervisor_cycle()
 _write_batch_log()
 ```
 
@@ -688,7 +688,6 @@ batch control
 worker loop
   _worker_loop()
   _run_batch_supervisor_cycle()
-  _execute_one_job()
   _interruptible_sleep()
 
 batch log

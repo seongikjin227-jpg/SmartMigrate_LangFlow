@@ -71,7 +71,7 @@ _MENU = {
     "🔎 Fail Analysis": render_fail_analysis,
     "🗄️ Mig Agent Monitor": render_mig,
     "🧾 SQL Agent Monitor": render_sql,
-    "✅ Correct SQL Manager": render_correct_sql,
+    "✅ User Edited SQL Manager": render_correct_sql,
     "📚 Tuning Rule Manager": render_rag,
     "🩺 System Health": render_health,
     "⚙️ Settings": render_settings,

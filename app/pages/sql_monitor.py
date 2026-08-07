@@ -14,30 +14,30 @@ _COLS_TABLE = [
     "TAG_KIND",
     "STATUS_CONVERSION",
     "STATUS_TUNING",
+    "USER_EDITED",
+    "RETRY_COUNT",
     "PRIORITY",
     "SQL_LENGTH",
     "MAP_TYPE",
     "EFFECTIVE_FR_SQL_LEN",
     "TO_SQL_LEN",
-    "TUNED_SQL_LEN",
+    "TUNED_TO_SQL_LEN",
     "FORMATTED_SQL_LEN",
     "TARGET_TABLE",
     "UPD_TS",
 ]
 
 _SQL_DETAIL_OPTIONS = {
-    "ASIS SQL": "FR_SQL_TEXT",
-    "EDIT ASIS SQL": "EDIT_FR_SQL",
-    "TOBE SQL": "TO_SQL_TEXT",
+    "FR_SQL": "FR_SQL",
+    "EDIT_FR_SQL": "EDIT_FR_SQL",
+    "TO_SQL": "TO_SQL",
     "BIND SQL": "BIND_SQL",
     "BIND SET": "BIND_SET",
     "TEST SQL": "TEST_SQL",
-    "TUNED SQL": "TUNED_SQL",
+    "TUNED_TO_SQL": "TUNED_TO_SQL",
     "TUNED RESULT": "TUNED_RESULT",
     "FORMATTED SQL": "FORMATTED_SQL",
-    "TOBE CORRECT SQL": "TOBE_CORRECT_SQL",
-    "BIND CORRECT SQL": "BIND_CORRECT_SQL",
-    "TEST CORRECT SQL": "TEST_CORRECT_SQL",
+    "USER_EDITED": "USER_EDITED",
     "BLOCK RAG CONTENT": "BLOCK_RAG_CONTENT",
     "LOG": "LOG",
 }
@@ -82,14 +82,16 @@ def _prepare_df(rows: list[dict]) -> pd.DataFrame:
         "TAG_KIND",
         "STATUS_CONVERSION",
         "STATUS_TUNING",
+        "USER_EDITED",
+        "RETRY_COUNT",
         "PRIORITY",
         "SQL_LENGTH",
         "MAP_TYPE",
         "TARGET_TABLE",
-        "FR_SQL_TEXT",
+        "FR_SQL",
         "EDIT_FR_SQL",
-        "TO_SQL_TEXT",
-        "TUNED_SQL",
+        "TO_SQL",
+        "TUNED_TO_SQL",
         "FORMATTED_SQL",
         "LOG",
     ]
@@ -98,7 +100,7 @@ def _prepare_df(rows: list[dict]) -> pd.DataFrame:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str)
 
-    for col in ("FR_SQL_LEN", "EDIT_FR_SQL_LEN", "EFFECTIVE_FR_SQL_LEN", "TO_SQL_LEN", "TUNED_SQL_LEN", "FORMATTED_SQL_LEN"):
+    for col in ("FR_SQL_LEN", "EDIT_FR_SQL_LEN", "EFFECTIVE_FR_SQL_LEN", "TO_SQL_LEN", "TUNED_TO_SQL_LEN", "FORMATTED_SQL_LEN"):
         if col not in df.columns:
             df[col] = 0
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
@@ -252,7 +254,7 @@ def render():
 
         presence = st.multiselect(
             "생성/로그 여부",
-            ["TOBE SQL 있음", "TUNED SQL 있음", "FORMATTED SQL 있음", "LOG 있음"],
+            ["TO_SQL 있음", "TUNED_TO_SQL 있음", "FORMATTED_SQL 있음", "LOG 있음"],
         )
 
     df = df_all.copy()
@@ -262,13 +264,13 @@ def render():
 
     if any_sql_query.strip():
         fields = (
-            df["FR_SQL_TEXT"]
+            df["FR_SQL"]
             + "\n"
             + df["EDIT_FR_SQL"]
             + "\n"
-            + df["TO_SQL_TEXT"]
+            + df["TO_SQL"]
             + "\n"
-            + df["TUNED_SQL"]
+            + df["TUNED_TO_SQL"]
             + "\n"
             + df["FORMATTED_SQL"]
             + "\n"
@@ -293,11 +295,11 @@ def render():
         df = df[df["SQL_LENGTH"] == sel_sql_length]
     if sel_tag_kind != ALL:
         df = df[df["TAG_KIND"] == sel_tag_kind]
-    if "TOBE SQL 있음" in presence:
-        df = df[df["TO_SQL_TEXT"].str.strip() != ""]
-    if "TUNED SQL 있음" in presence:
-        df = df[df["TUNED_SQL"].str.strip() != ""]
-    if "FORMATTED SQL 있음" in presence:
+    if "TO_SQL 있음" in presence:
+        df = df[df["TO_SQL"].str.strip() != ""]
+    if "TUNED_TO_SQL 있음" in presence:
+        df = df[df["TUNED_TO_SQL"].str.strip() != ""]
+    if "FORMATTED_SQL 있음" in presence:
         df = df[df["FORMATTED_SQL"].str.strip() != ""]
     if "LOG 있음" in presence:
         df = df[df["LOG"].str.strip() != ""]
@@ -369,14 +371,14 @@ def render():
         left_labels = st.multiselect(
             "왼쪽 컬럼",
             picker_options,
-            default=["ASIS SQL"],
+            default=["FR_SQL"],
             key="sql_monitor_left_col",
         )
     with right_picker:
         right_labels = st.multiselect(
             "오른쪽 컬럼",
             picker_options,
-            default=["TOBE SQL"],
+            default=["TO_SQL"],
             key="sql_monitor_right_col",
         )
 

@@ -18,14 +18,14 @@ _COLS_TABLE = [
     "SQL_LENGTH",
     "MAP_TYPE",
     "EFFECTIVE_FR_SQL_LEN",
-    "TUNED_SQL_LEN",
+    "TUNED_TO_SQL_LEN",
     "FORMATTED_SQL_LEN",
     "UPD_TS",
 ]
 
 _TUNING_DETAIL_OPTIONS = {
-    "TOBE SQL": "TO_SQL_TEXT",
-    "TUNED SQL": "TUNED_SQL",
+    "TO_SQL": "TO_SQL",
+    "TUNED_TO_SQL": "TUNED_TO_SQL",
     "FORMATTED SQL": "FORMATTED_SQL",
     "TUNED RESULT": "TUNED_RESULT",
     "BLOCK RAG CONTENT": "BLOCK_RAG_CONTENT",
@@ -171,8 +171,8 @@ def _prepare_df(rows: list[dict]) -> pd.DataFrame:
         "SQL_LENGTH",
         "MAP_TYPE",
         "TARGET_TABLE",
-        "TO_SQL_TEXT",
-        "TUNED_SQL",
+        "TO_SQL",
+        "TUNED_TO_SQL",
         "FORMATTED_SQL",
         "LOG",
     ]
@@ -181,7 +181,7 @@ def _prepare_df(rows: list[dict]) -> pd.DataFrame:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str)
 
-    for col in ("EFFECTIVE_FR_SQL_LEN", "TO_SQL_LEN", "TUNED_SQL_LEN", "FORMATTED_SQL_LEN"):
+    for col in ("EFFECTIVE_FR_SQL_LEN", "TO_SQL_LEN", "TUNED_TO_SQL_LEN", "FORMATTED_SQL_LEN"):
         if col not in df.columns:
             df[col] = 0
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
@@ -233,7 +233,7 @@ def render():
         st.error(f"DB 연결 실패: {e}")
         return
 
-    jobs = [j for j in all_jobs if j.get("TUNED_SQL") or j.get("STATUS_TUNING") or j.get("TUNED_RESULT")]
+    jobs = [j for j in all_jobs if j.get("TUNED_TO_SQL") or j.get("STATUS_TUNING") or j.get("TUNED_RESULT")]
 
     if not jobs:
         st.info("튜닝 대상 작업이 없습니다.")
@@ -256,7 +256,7 @@ def render():
         with c1:
             block_rag_query = st.text_input("BLOCK_RAG_CONTENT LIKE", placeholder="적용 후보 룰 검색")
         with c2:
-            sql_text_query = st.text_input("SQL 본문 LIKE", placeholder="TOBE/TUNED SQL 검색")
+            sql_text_query = st.text_input("SQL 본문 LIKE", placeholder="TO_SQL/TUNED_TO_SQL 검색")
         with c3:
             log_query = st.text_input("LOG LIKE", placeholder="검증 오류 검색")
         with c4:
@@ -284,7 +284,7 @@ def render():
         with c4:
             output_presence = st.multiselect(
                 "산출물 여부",
-                ["TUNED SQL 있음", "FORMATTED SQL 있음", "FORMATTED SQL 없음"],
+                ["TUNED_TO_SQL 있음", "FORMATTED_SQL 있음", "FORMATTED_SQL 없음"],
             )
 
     df = df_all.copy()
@@ -296,7 +296,7 @@ def render():
     df = df[_contains(df["LOG"], log_query)]
 
     if sql_text_query.strip():
-        sql_fields = df["TO_SQL_TEXT"] + "\n" + df["TUNED_SQL"] + "\n" + df["FORMATTED_SQL"]
+        sql_fields = df["TO_SQL"] + "\n" + df["TUNED_TO_SQL"] + "\n" + df["FORMATTED_SQL"]
         df = df[_contains(sql_fields, sql_text_query)]
 
     if result_kind == "튜닝 적용":
@@ -321,11 +321,11 @@ def render():
 
     df = _apply_length_filter(df, length_preset, int(min_len), int(max_len))
 
-    if "TUNED SQL 있음" in output_presence:
-        df = df[df["TUNED_SQL"].str.strip() != ""]
-    if "FORMATTED SQL 있음" in output_presence:
+    if "TUNED_TO_SQL 있음" in output_presence:
+        df = df[df["TUNED_TO_SQL"].str.strip() != ""]
+    if "FORMATTED_SQL 있음" in output_presence:
         df = df[df["FORMATTED_SQL"].str.strip() != ""]
-    if "FORMATTED SQL 없음" in output_presence:
+    if "FORMATTED_SQL 없음" in output_presence:
         df = df[df["FORMATTED_SQL"].str.strip() == ""]
 
     show_cols = [c for c in _COLS_TABLE if c in df.columns]
@@ -394,14 +394,14 @@ def render():
         left_labels = st.multiselect(
             "왼쪽 컬럼",
             picker_options,
-            default=["TOBE SQL"],
+            default=["TO_SQL"],
             key="tuning_monitor_left_col",
         )
     with right_picker:
         right_labels = st.multiselect(
             "오른쪽 컬럼",
             picker_options,
-            default=["TUNED SQL"],
+            default=["TUNED_TO_SQL"],
             key="tuning_monitor_right_col",
         )
 

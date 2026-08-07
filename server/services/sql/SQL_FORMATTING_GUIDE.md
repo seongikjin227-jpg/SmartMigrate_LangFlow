@@ -4,8 +4,8 @@ DB에 저장되는 SQL을 사람이 읽기 쉽게 만들기 위한 포맷팅 기
 
 ## 적용 대상
 
-- `TO_SQL_TEXT`
-- `TUNED_SQL`
+- `TO_SQL`
+- `TUNED_TO_SQL`
 - `BIND_SQL`
 - `TEST_SQL`
 

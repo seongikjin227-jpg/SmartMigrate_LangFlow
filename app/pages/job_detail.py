@@ -8,13 +8,13 @@ from utils.db import get_mig_dtl, get_mig_jobs, get_mig_logs, get_sql_job_full, 
 
 
 _SQL_DETAIL_OPTIONS = {
-    "ASIS SQL": "FR_SQL_TEXT",
-    "EDIT ASIS SQL": "EDIT_FR_SQL",
-    "TOBE SQL": "TO_SQL_TEXT",
+    "FR_SQL": "FR_SQL",
+    "EDIT_FR_SQL": "EDIT_FR_SQL",
+    "TO_SQL": "TO_SQL",
     "BIND SQL": "BIND_SQL",
     "BIND SET": "BIND_SET",
     "TEST SQL": "TEST_SQL",
-    "TUNED SQL": "TUNED_SQL",
+    "TUNED_TO_SQL": "TUNED_TO_SQL",
     "TUNED RESULT": "TUNED_RESULT",
     "FORMATTED SQL": "FORMATTED_SQL",
     "BLOCK RAG CONTENT": "BLOCK_RAG_CONTENT",
@@ -290,14 +290,14 @@ def _render_sql_job_detail():
         left_labels = st.multiselect(
             "왼쪽 컬럼",
             picker_options,
-            default=["ASIS SQL"],
+            default=["FR_SQL"],
             key="sql_detail_left_col",
         )
     with right_picker:
         right_labels = st.multiselect(
             "오른쪽 컬럼",
             picker_options,
-            default=["TOBE SQL"],
+            default=["TO_SQL"],
             key="sql_detail_right_col",
         )
 

@@ -26,12 +26,11 @@ class SqlInfoJob:
     status: Optional[str] = None
     log_text: Optional[str] = None
     upd_ts: Optional[datetime] = None
-    tobe_correct_sql: Optional[str] = None
-    bind_correct_sql: Optional[str] = None
-    test_correct_sql: Optional[str] = None
+    user_edited: Optional[str] = None
     sql_length: Optional[str] = None
     map_type: Optional[str] = None
     priority: Optional[int] = None
+    retry_count: Optional[int] = None
 
     @property
     def source_sql(self) -> str:

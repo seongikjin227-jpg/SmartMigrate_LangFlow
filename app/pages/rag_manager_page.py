@@ -238,7 +238,7 @@ def render():
         )
         new_target_sql = st.text_area(
             "TARGET_SQL",
-            placeholder="SQL_CONVERSION: TOBE SQL / SQL_TUNING: Tuned SQL",
+            placeholder="SQL_CONVERSION: TO_SQL / SQL_TUNING: TUNED_TO_SQL",
             height=140,
         )
         submitted = st.form_submit_button("저장", type="primary")

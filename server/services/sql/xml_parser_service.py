@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 import oracledb
 
-from server.services.sql.db_runtime import get_connection, get_result_table
+from server.services.sql.db_runtime import get_connection, get_result_table, split_table_owner_and_name
 from server.core.logger import logger
 
 
@@ -68,6 +68,37 @@ _SQL_TABLE_NOISE_WORDS = {
 
 
 _CONVERSION_STATUS_COLUMN = "STATUS_CONVERSION"
+
+
+def _get_available_columns(table: str) -> set[str]:
+    owner, table_name = split_table_owner_and_name(table)
+    if owner:
+        query = """
+            SELECT COLUMN_NAME
+            FROM ALL_TAB_COLUMNS
+            WHERE OWNER = :1
+              AND TABLE_NAME = :2
+        """
+        params = [owner, table_name]
+    else:
+        query = """
+            SELECT COLUMN_NAME
+            FROM USER_TAB_COLUMNS
+            WHERE TABLE_NAME = :1
+        """
+        params = [table_name]
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        return {_to_text(row[0]).upper() for row in cursor.fetchall()}
+
+
+def _preferred_column(available_columns: set[str], preferred: str, fallback: str | None = None) -> str:
+    if preferred in available_columns:
+        return preferred
+    if fallback and fallback in available_columns:
+        return fallback
+    return preferred
 
 
 @dataclass
@@ -424,6 +455,8 @@ def _count_json_files(data_dir: str | None = None) -> int:
 def upsert_json_to_next_sql_info(data_dir: str | None = None) -> dict[str, int]:
     """Stage2: stage1 payload를 NEXT_SQL_INFO에 MERGE upsert 한다."""
     table = get_result_table()
+    available_columns = _get_available_columns(table)
+    fr_sql_column = _preferred_column(available_columns, "FR_SQL", "FR_SQL_TEXT")
     json_file_count = _count_json_files(data_dir)
     payloads = _load_json_payloads(data_dir)
     logger.info(
@@ -439,7 +472,7 @@ def upsert_json_to_next_sql_info(data_dir: str | None = None) -> dict[str, int]:
             SELECT :tag_kind AS TAG_KIND,
                    :space_nm AS SPACE_NM,
                    :sql_id AS SQL_ID,
-                   :fr_sql_text AS FR_SQL_TEXT,
+                   :fr_sql_text AS FR_SQL,
                    :target_table AS TARGET_TABLE
             FROM DUAL
         ) S
@@ -447,16 +480,16 @@ def upsert_json_to_next_sql_info(data_dir: str | None = None) -> dict[str, int]:
         WHEN MATCHED THEN
             UPDATE SET
                 T.TAG_KIND = S.TAG_KIND,
-                T.FR_SQL_TEXT = S.FR_SQL_TEXT,
+                T.{fr_sql_column} = S.FR_SQL,
                 T.TARGET_TABLE = S.TARGET_TABLE,
                 T.EDIT_FR_SQL = NULL,
                 T.UPD_TS = CURRENT_TIMESTAMP
         WHEN NOT MATCHED THEN
             INSERT (
-                TAG_KIND, SPACE_NM, SQL_ID, FR_SQL_TEXT, TARGET_TABLE, UPD_TS
+                TAG_KIND, SPACE_NM, SQL_ID, {fr_sql_column}, TARGET_TABLE, UPD_TS
             )
             VALUES (
-                S.TAG_KIND, S.SPACE_NM, S.SQL_ID, S.FR_SQL_TEXT, S.TARGET_TABLE, CURRENT_TIMESTAMP
+                S.TAG_KIND, S.SPACE_NM, S.SQL_ID, S.FR_SQL, S.TARGET_TABLE, CURRENT_TIMESTAMP
             )
     """
 
@@ -580,9 +613,11 @@ def _resolve_include_text(
 def expand_include_to_edit_sql() -> dict[str, int]:
     """Stage3: include 확장 SQL을 EDIT_FR_SQL에 저장한다."""
     table = get_result_table()
+    available_columns = _get_available_columns(table)
+    fr_sql_column = _preferred_column(available_columns, "FR_SQL", "FR_SQL_TEXT")
     logger.info("[XMLParser] Stage3 started")
     fetch_sql = f"""
-        SELECT TO_CHAR(SPACE_NM), TO_CHAR(SQL_ID), TO_CHAR(TAG_KIND), FR_SQL_TEXT, EDIT_FR_SQL
+        SELECT TO_CHAR(SPACE_NM), TO_CHAR(SQL_ID), TO_CHAR(TAG_KIND), {fr_sql_column} AS FR_SQL_TEXT, EDIT_FR_SQL
         FROM {table}
     """
     rows: list[tuple[str, str, str, str, str]] = []
@@ -1081,6 +1116,8 @@ def _strip_schema_from_sql_text(sql_text: str, pairs: list[tuple[str, str]]) -> 
 def strip_schema_qualifiers_from_next_sql_info() -> dict[str, int]:
     """Stage5: TARGET_TABLE/FR_SQL_TEXT/EDIT_FR_SQL에서 스키마명을 제거하고 READY 처리한다."""
     result_table = get_result_table()
+    available_columns = _get_available_columns(result_table)
+    fr_sql_column = _preferred_column(available_columns, "FR_SQL", "FR_SQL_TEXT")
     logger.info("[XMLParser] Stage5 started")
 
     rows: list[tuple[str, str, str, str]] = []
@@ -1088,7 +1125,7 @@ def strip_schema_qualifiers_from_next_sql_info() -> dict[str, int]:
         cursor = conn.cursor()
         cursor.execute(
             f"""
-            SELECT ROWIDTOCHAR(ROWID), TARGET_TABLE, FR_SQL_TEXT, EDIT_FR_SQL
+            SELECT ROWIDTOCHAR(ROWID), TARGET_TABLE, {fr_sql_column} AS FR_SQL_TEXT, EDIT_FR_SQL
             FROM {result_table}
             """
         )
@@ -1145,7 +1182,7 @@ def strip_schema_qualifiers_from_next_sql_info() -> dict[str, int]:
                 f"""
                 UPDATE {result_table}
                 SET TARGET_TABLE = :target_table,
-                    FR_SQL_TEXT = :fr_sql_text,
+                    {fr_sql_column} = :fr_sql_text,
                     EDIT_FR_SQL = :edit_fr_sql,
                     UPD_TS = CURRENT_TIMESTAMP
                 WHERE ROWID = CHARTOROWID(:rid)
@@ -1199,6 +1236,8 @@ def strip_schema_qualifiers_from_next_sql_info() -> dict[str, int]:
 def cleanup_next_sql_info_rows() -> dict[str, int]:
     """Stage4: 비활성 SQL을 정리하고 TARGET_TABLE을 보정한다."""
     result_table = get_result_table()
+    available_columns = _get_available_columns(result_table)
+    fr_sql_column = _preferred_column(available_columns, "FR_SQL", "FR_SQL_TEXT")
     active_table = _validate_sql_identifier(_require_env("ACTIVE_SQL_ID_TABLE"))
     active_column = _validate_sql_identifier(os.getenv("ACTIVE_SQL_ID_COLUMN", "SQL_ID"))
 
@@ -1238,7 +1277,7 @@ def cleanup_next_sql_info_rows() -> dict[str, int]:
         cursor.execute(
             f"""
             SELECT ROWIDTOCHAR(ROWID), TO_CHAR(SPACE_NM), TO_CHAR(SQL_ID),
-                   TARGET_TABLE, FR_SQL_TEXT, EDIT_FR_SQL
+                   TARGET_TABLE, {fr_sql_column} AS FR_SQL_TEXT, EDIT_FR_SQL
             FROM {result_table}
             """
         )
