@@ -31,6 +31,7 @@ FAIL_STATUSES = ("FAIL", "FAIL-TOBE", "FAIL-TUNED", "FAIL-BIND", "FAIL-TEST", "F
 
 _thick_done = False
 _AVAILABLE_COLUMNS_CACHE: dict[str, set[str]] = {}
+_COLUMN_TYPE_CACHE: dict[str, dict[str, str]] = {}
 
 
 def _sql_in(values: tuple[str, ...]) -> str:
@@ -108,6 +109,53 @@ def _get_available_columns(table: str) -> set[str]:
     return columns
 
 
+def _get_column_data_types(table: str) -> dict[str, str]:
+    owner, table_name = _split_table_owner_and_name(table)
+    cache_key = f"{owner or ''}.{table_name}"
+    if cache_key in _COLUMN_TYPE_CACHE:
+        return _COLUMN_TYPE_CACHE[cache_key]
+
+    if owner:
+        q = """
+            SELECT COLUMN_NAME, DATA_TYPE
+            FROM ALL_TAB_COLUMNS
+            WHERE OWNER = :1
+              AND TABLE_NAME = :2
+        """
+        params = (owner, table_name)
+    else:
+        q = """
+            SELECT COLUMN_NAME, DATA_TYPE
+            FROM USER_TAB_COLUMNS
+            WHERE TABLE_NAME = :1
+        """
+        params = (table_name,)
+
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(q, params)
+        types = {_s(row[0]).upper(): _s(row[1]).upper() for row in cur.fetchall()}
+
+    _COLUMN_TYPE_CACHE[cache_key] = types
+    return types
+
+
+def _is_clob_column(table: str, column: str) -> bool:
+    return "CLOB" in _get_column_data_types(table).get(column.upper(), "")
+
+
+def _text_compare_expr(table: str, column: str) -> str:
+    if _is_clob_column(table, column):
+        return f"DBMS_LOB.SUBSTR({column}, 4000, 1)"
+    return column
+
+
+def _empty_text_expr(table: str, column: str) -> str:
+    if _is_clob_column(table, column):
+        return f"NVL(DBMS_LOB.GETLENGTH({column}), 0) = 0"
+    return f"{column} IS NULL"
+
+
 def _next_top_priority(table: str, available_columns: set[str]) -> int | None:
     if "PRIORITY" not in available_columns:
         return None
@@ -158,7 +206,9 @@ _SQL_CONVERSION_STATUS_COLUMN = "STATUS_CONVERSION"
 _SQL_TUNING_STATUS_COLUMN = "STATUS_TUNING"
 
 
-def _sql_status_expr(column: str | None, alias: str) -> str:
+def _sql_status_expr(column: str | None, alias: str, table: str | None = None) -> str:
+    if table and column:
+        return f"{_text_compare_expr(table, column)} AS {alias}"
     return f"TO_CHAR({column}) AS {alias}"
 
 
@@ -272,12 +322,13 @@ def get_tuning_status_summary() -> dict[str, int]:
     """Tuning status summary for converted SQL rows."""
     available_columns = _get_available_columns(SQL_TABLE)
     tuned_status_column = _SQL_TUNING_STATUS_COLUMN
+    tuned_status_expr = _text_compare_expr(SQL_TABLE, tuned_status_column)
     to_sql_column = _preferred_column(available_columns, "TO_SQL", "TO_SQL_TEXT")
     q = f"""
-        SELECT NVL(TO_CHAR({tuned_status_column}), 'NULL'), COUNT(*)
+        SELECT NVL({tuned_status_expr}, 'NULL'), COUNT(*)
         FROM {SQL_TABLE}
-        WHERE {to_sql_column} IS NOT NULL
-        GROUP BY {tuned_status_column}
+        WHERE NOT ({_empty_text_expr(SQL_TABLE, to_sql_column)})
+        GROUP BY {tuned_status_expr}
     """
     try:
         with get_connection() as conn:
@@ -291,6 +342,7 @@ def get_tuning_status_summary() -> dict[str, int]:
 def get_formatting_summary() -> dict[str, int]:
     """Return formatting guide application counts for completed tuning rows."""
     tuned_status_column = _SQL_TUNING_STATUS_COLUMN
+    tuned_status_expr = _text_compare_expr(SQL_TABLE, tuned_status_column)
     q = f"""
         SELECT
             COUNT(*) AS TOTAL,
@@ -303,7 +355,7 @@ def get_formatting_summary() -> dict[str, int]:
                 END
             ) AS APPLIED
         FROM {SQL_TABLE}
-        WHERE UPPER(TRIM({tuned_status_column})) IN ({_sql_in(TUNING_PASS_STATUSES)})
+        WHERE UPPER(TRIM({tuned_status_expr})) IN ({_sql_in(TUNING_PASS_STATUSES)})
     """
     try:
         with get_connection() as conn:
@@ -334,7 +386,7 @@ def get_sql_jobs() -> list[dict]:
     target_table_column = _optional_column_expr("TARGET_TABLE", available_columns)
     edit_fr_sql_column = _optional_column_expr("EDIT_FR_SQL", available_columns)
     tuned_sql_column = _optional_alias_expr(available_columns, "TUNED_TO_SQL", "TUNED_TO_SQL", data_type="CLOB", fallback="TUNED_SQL")
-    tuned_test_column = _sql_status_expr(tuned_status_column, "STATUS_TUNING")
+    tuned_test_column = _sql_status_expr(tuned_status_column, "STATUS_TUNING", SQL_TABLE)
     tuned_result_column = _optional_column_expr("TUNED_RESULT", available_columns)
     formatted_sql_column = _optional_column_expr("FORMATTED_SQL", available_columns)
     block_rag_column = _optional_column_expr("BLOCK_RAG_CONTENT", available_columns)
@@ -366,7 +418,7 @@ def get_sql_jobs() -> list[dict]:
                DBMS_LOB.GETLENGTH({to_sql_column}) AS TO_SQL_LEN,
                {tuned_len_expr} AS TUNED_TO_SQL_LEN,
                {formatted_len_expr} AS FORMATTED_SQL_LEN,
-               {_sql_status_expr(status_column, "STATUS_CONVERSION")}, LOG, TO_CHAR(UPD_TS) AS UPD_TS
+                {_sql_status_expr(status_column, "STATUS_CONVERSION", SQL_TABLE)}, LOG, TO_CHAR(UPD_TS) AS UPD_TS
         FROM {SQL_TABLE}
         ORDER BY UPD_TS DESC NULLS LAST
     """
@@ -381,7 +433,8 @@ def get_sql_jobs() -> list[dict]:
 
 def get_sql_status_summary() -> dict[str, int]:
     status_column = _SQL_CONVERSION_STATUS_COLUMN
-    q = f"SELECT NVL(TO_CHAR({status_column}),'NULL'), COUNT(*) FROM {SQL_TABLE} GROUP BY {status_column}"
+    status_expr = _text_compare_expr(SQL_TABLE, status_column)
+    q = f"SELECT NVL({status_expr},'NULL'), COUNT(*) FROM {SQL_TABLE} GROUP BY {status_expr}"
     try:
         with get_connection() as conn:
             cur = conn.cursor()
@@ -395,6 +448,7 @@ def get_sql_length_success_summary(short_limit: int = 5000) -> dict[str, dict[st
     """Return SQL conversion PASS/FAIL success base split by effective SQL length."""
     available_columns = _get_available_columns(SQL_TABLE)
     status_column = _SQL_CONVERSION_STATUS_COLUMN
+    status_expr = _text_compare_expr(SQL_TABLE, status_column)
     fr_sql_column = _preferred_column(available_columns, "FR_SQL", "FR_SQL_TEXT")
     edit_condition = (
         """
@@ -418,9 +472,9 @@ def get_sql_length_success_summary(short_limit: int = 5000) -> dict[str, dict[st
                     THEN 'SHORT'
                     ELSE 'LONG'
                 END AS LENGTH_GROUP,
-                {status_column} AS STATUS_CONVERSION
+                {status_expr} AS STATUS_CONVERSION
             FROM {SQL_TABLE}
-            WHERE UPPER(TRIM(NVL({status_column}, 'NULL'))) IN ({_sql_in(CONVERSION_PASS_STATUSES + CONVERSION_FAIL_STATUSES)})
+            WHERE UPPER(TRIM(NVL({status_expr}, 'NULL'))) IN ({_sql_in(CONVERSION_PASS_STATUSES + CONVERSION_FAIL_STATUSES)})
         )
         GROUP BY LENGTH_GROUP
     """
@@ -445,8 +499,8 @@ def get_sql_length_success_summary(short_limit: int = 5000) -> dict[str, dict[st
 def get_xml_export_sqls() -> list[dict]:
     """Return tuning rows used by XML export, including namespace status counts."""
     tuned_status_column = _SQL_TUNING_STATUS_COLUMN
-    tuned_status_expr = _sql_status_expr(tuned_status_column, "STATUS_TUNING")
-    tuned_status_filter = f"{tuned_status_column} IS NOT NULL"
+    tuned_status_expr = _sql_status_expr(tuned_status_column, "STATUS_TUNING", SQL_TABLE)
+    tuned_status_filter = f"NOT ({_empty_text_expr(SQL_TABLE, tuned_status_column)})"
     q = f"""
         SELECT SPACE_NM, TAG_KIND, SQL_ID, {tuned_status_expr}, FORMATTED_SQL
         FROM {SQL_TABLE}
@@ -763,8 +817,8 @@ def reset_sql_tuning_job(sql_id: str, space_nm: str | None = None) -> int:
 
 def get_sql_failure_log(sql_id: str, space_nm: str | None = None) -> list[dict]:
     """NEXT_SQL_INFO의 LOG 컬럼을 통해 SQL 작업 실패 로그를 조회합니다."""
-    status_expr = _sql_status_expr(_SQL_CONVERSION_STATUS_COLUMN, "STATUS_CONVERSION")
-    tuned_status_expr = _sql_status_expr(_SQL_TUNING_STATUS_COLUMN, "STATUS_TUNING")
+    status_expr = _sql_status_expr(_SQL_CONVERSION_STATUS_COLUMN, "STATUS_CONVERSION", SQL_TABLE)
+    tuned_status_expr = _sql_status_expr(_SQL_TUNING_STATUS_COLUMN, "STATUS_TUNING", SQL_TABLE)
     if space_nm:
         q = f"""
             SELECT TO_CHAR(SQL_ID) AS SQL_ID, TO_CHAR(SPACE_NM) AS SPACE_NM,
@@ -796,6 +850,7 @@ def get_sql_conversion_failure_analysis_rows(limit: int = 200) -> list[dict]:
     available_columns = _get_available_columns(SQL_TABLE)
     status_column = _SQL_CONVERSION_STATUS_COLUMN
     tuned_status_column = _SQL_TUNING_STATUS_COLUMN
+    status_expr = _text_compare_expr(SQL_TABLE, status_column)
     fr_sql_column = _preferred_column(available_columns, "FR_SQL", "FR_SQL_TEXT")
     map_kind_column = "TO_CHAR(MAP_KIND) AS MAP_KIND" if "MAP_KIND" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS MAP_KIND"
     map_type_column = "TO_CHAR(MAP_TYPE) AS MAP_TYPE" if "MAP_TYPE" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS MAP_TYPE"
@@ -819,12 +874,12 @@ def get_sql_conversion_failure_analysis_rows(limit: int = 200) -> list[dict]:
                     THEN {edit_len_expr}
                     ELSE DBMS_LOB.GETLENGTH({fr_sql_column})
                 END AS EFFECTIVE_SQL_LEN,
-                    {_sql_status_expr(status_column, "STATUS_CONVERSION")},
-                    {_sql_status_expr(tuned_status_column, "STATUS_TUNING")},
+                    {_sql_status_expr(status_column, "STATUS_CONVERSION", SQL_TABLE)},
+                    {_sql_status_expr(tuned_status_column, "STATUS_TUNING", SQL_TABLE)},
                     LOG,
                     TO_CHAR(UPD_TS, 'YYYY-MM-DD HH24:MI:SS') AS UPD_TS
             FROM {SQL_TABLE}
-            WHERE UPPER(TRIM({status_column})) IN ({_sql_in(CONVERSION_FAIL_STATUSES)})
+            WHERE UPPER(TRIM({status_expr})) IN ({_sql_in(CONVERSION_FAIL_STATUSES)})
             ORDER BY UPD_TS DESC NULLS LAST
         )
         WHERE ROWNUM <= :1
@@ -843,6 +898,7 @@ def get_sql_tuning_failure_analysis_rows(limit: int = 200) -> list[dict]:
     available_columns = _get_available_columns(SQL_TABLE)
     status_column = _SQL_CONVERSION_STATUS_COLUMN
     tuned_status_column = _SQL_TUNING_STATUS_COLUMN
+    tuned_status_expr = _text_compare_expr(SQL_TABLE, tuned_status_column)
     fr_sql_column = _preferred_column(available_columns, "FR_SQL", "FR_SQL_TEXT")
     to_sql_column = _preferred_column(available_columns, "TO_SQL", "TO_SQL_TEXT")
     map_kind_column = "TO_CHAR(MAP_KIND) AS MAP_KIND" if "MAP_KIND" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS MAP_KIND"
@@ -864,12 +920,12 @@ def get_sql_tuning_failure_analysis_rows(limit: int = 200) -> list[dict]:
                     DBMS_LOB.GETLENGTH({fr_sql_column}) AS FR_SQL_LEN,
                     DBMS_LOB.GETLENGTH({to_sql_column}) AS TO_SQL_LEN,
                     {tuned_len_expr} AS TUNED_TO_SQL_LEN,
-                    {_sql_status_expr(status_column, "STATUS_CONVERSION")},
-                    {_sql_status_expr(tuned_status_column, "STATUS_TUNING")},
+                     {_sql_status_expr(status_column, "STATUS_CONVERSION", SQL_TABLE)},
+                     {_sql_status_expr(tuned_status_column, "STATUS_TUNING", SQL_TABLE)},
                     LOG,
                     TO_CHAR(UPD_TS, 'YYYY-MM-DD HH24:MI:SS') AS UPD_TS
             FROM {SQL_TABLE}
-            WHERE UPPER(TRIM({tuned_status_column})) IN ({_sql_in(TUNING_FAIL_STATUSES)})
+            WHERE UPPER(TRIM({tuned_status_expr})) IN ({_sql_in(TUNING_FAIL_STATUSES)})
             ORDER BY UPD_TS DESC NULLS LAST
         )
         WHERE ROWNUM <= :1
@@ -1029,11 +1085,11 @@ def get_sql_job_full(row_id: str) -> dict | None:
         SELECT ROWIDTOCHAR(ROWID) AS ROW_ID,
                TAG_KIND, SPACE_NM, SQL_ID,
                {fr_sql_select}, EDIT_FR_SQL, TARGET_TABLE,
-               {to_sql_select}, {tuned_sql_column}, {_sql_status_expr(tuned_status_column, "STATUS_TUNING")}, {tuned_result_column},
+               {to_sql_select}, {tuned_sql_column}, {_sql_status_expr(tuned_status_column, "STATUS_TUNING", SQL_TABLE)}, {tuned_result_column},
                BIND_SQL, BIND_SET, TEST_SQL,
                FORMATTED_SQL, BLOCK_RAG_CONTENT,
                {user_edited_column},
-               {_sql_status_expr(status_column, "STATUS_CONVERSION")}, LOG, TO_CHAR(UPD_TS) AS UPD_TS,
+               {_sql_status_expr(status_column, "STATUS_CONVERSION", SQL_TABLE)}, LOG, TO_CHAR(UPD_TS) AS UPD_TS,
                {retry_count_column}
         FROM {SQL_TABLE}
         WHERE ROWIDTOCHAR(ROWID) = :1

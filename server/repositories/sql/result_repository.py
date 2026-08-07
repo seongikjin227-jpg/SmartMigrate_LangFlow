@@ -16,6 +16,7 @@ from server.services.sql.statuses import (
 )
 
 _COLUMN_LENGTH_CACHE: dict[str, dict[str, int]] = {}
+_COLUMN_TYPE_CACHE: dict[str, dict[str, str]] = {}
 _AVAILABLE_COLUMNS_CACHE: dict[str, set[str]] = {}
 _PENDING_JOB_STATUSES = ("URGENT", "READY", "PENDING", LEGACY_FAIL, *CONVERSION_FAIL_STATUSES)
 _SQL_LENGTH_SHORT_MAX = 5000
@@ -26,7 +27,9 @@ _CONVERSION_STATUS_COLUMN = "STATUS_CONVERSION"
 _TUNING_STATUS_COLUMN = "STATUS_TUNING"
 
 
-def _status_select_expr(column: str | None, alias: str) -> str:
+def _status_select_expr(column: str | None, alias: str, table: str | None = None) -> str:
+    if table and column:
+        return f"{_text_compare_expr(table, column)} AS {alias}"
     return f"{column} AS {alias}"
 
 
@@ -69,6 +72,59 @@ def _to_optional_text(value) -> str | None:
     return _to_text(value)
 
 
+def _cache_key_for_table(table: str) -> tuple[str, str, str]:
+    owner, normalized_table = split_table_owner_and_name(table)
+    return owner or "", normalized_table, f"{owner or ''}.{normalized_table}"
+
+
+def _get_column_data_types(table: str) -> dict[str, str]:
+    owner, normalized_table, cache_key = _cache_key_for_table(table)
+    if cache_key in _COLUMN_TYPE_CACHE:
+        return _COLUMN_TYPE_CACHE[cache_key]
+
+    if owner:
+        query = """
+            SELECT COLUMN_NAME, DATA_TYPE
+            FROM ALL_TAB_COLUMNS
+            WHERE OWNER = :1
+              AND TABLE_NAME = :2
+        """
+        params = [owner, normalized_table]
+    else:
+        query = """
+            SELECT COLUMN_NAME, DATA_TYPE
+            FROM USER_TAB_COLUMNS
+            WHERE TABLE_NAME = :1
+        """
+        params = [normalized_table]
+
+    types: dict[str, str] = {}
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        for col_name, data_type in cursor.fetchall():
+            types[_to_text(col_name).upper()] = _to_text(data_type).upper()
+
+    _COLUMN_TYPE_CACHE[cache_key] = types
+    return types
+
+
+def _is_clob_column(table: str, column: str) -> bool:
+    return "CLOB" in _get_column_data_types(table).get(column.upper(), "")
+
+
+def _text_compare_expr(table: str, column: str) -> str:
+    if _is_clob_column(table, column):
+        return f"DBMS_LOB.SUBSTR({column}, 4000, 1)"
+    return column
+
+
+def _empty_text_expr(table: str, column: str) -> str:
+    if _is_clob_column(table, column):
+        return f"NVL(DBMS_LOB.GETLENGTH({column}), 0) = 0"
+    return f"{column} IS NULL"
+
+
 def _get_job_max_batch_count() -> int:
     raw_value = os.getenv("JOB_MAX_BATCH_COUNT", str(_DEFAULT_JOB_MAX_BATCH_COUNT))
     try:
@@ -90,8 +146,7 @@ def _get_batch_limit_clause(available_columns: set[str]) -> str:
 
 
 def _get_column_data_lengths(table: str) -> dict[str, int]:
-    owner, normalized_table = split_table_owner_and_name(table)
-    cache_key = f"{owner or ''}.{normalized_table}"
+    owner, normalized_table, cache_key = _cache_key_for_table(table)
     if cache_key in _COLUMN_LENGTH_CACHE:
         return _COLUMN_LENGTH_CACHE[cache_key]
 
@@ -232,8 +287,12 @@ def get_pending_jobs() -> list[SqlInfoJob]:
     removed_correct_placeholders = "CAST(NULL AS CLOB) AS UNUSED_SQL_PLACEHOLDER_1, CAST(NULL AS CLOB) AS UNUSED_SQL_PLACEHOLDER_2"
     conversion_status_column = _CONVERSION_STATUS_COLUMN
     tuning_status_column = _TUNING_STATUS_COLUMN
-    conversion_status_select = _status_select_expr(conversion_status_column, "STATUS_CONVERSION")
-    tuning_status_select = _status_select_expr(tuning_status_column, "STATUS_TUNING")
+    conversion_status_expr = _text_compare_expr(table, conversion_status_column)
+    tuning_status_expr = _text_compare_expr(table, tuning_status_column)
+    space_nm_order_expr = _text_compare_expr(table, "SPACE_NM")
+    sql_id_order_expr = _text_compare_expr(table, "SQL_ID")
+    conversion_status_select = _status_select_expr(conversion_status_column, "STATUS_CONVERSION", table)
+    tuning_status_select = _status_select_expr(tuning_status_column, "STATUS_TUNING", table)
     tuned_sql_column = _optional_alias_expr(available_columns, "TUNED_TO_SQL", "TUNED_SQL", fallback="TUNED_SQL")
     fr_bindtuned_sql_column = _optional_alias_expr(available_columns, "TUNED_FR_SQL", "FR_BINDTUNED_SQL", fallback="FR_BINDTUNED_SQL")
     sql_length_column = "SQL_LENGTH" if "SQL_LENGTH" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS SQL_LENGTH"
@@ -247,11 +306,11 @@ def get_pending_jobs() -> list[SqlInfoJob]:
         if "PRIORITY" in available_columns
         else f"""
           CASE
-            WHEN UPPER(TRIM({conversion_status_column})) = 'URGENT' THEN 1
-            WHEN UPPER(TRIM({conversion_status_column})) = 'READY' THEN 2
-            WHEN UPPER(TRIM({conversion_status_column})) IN ({sql_in((LEGACY_FAIL, *CONVERSION_FAIL_STATUSES))}) THEN 3
-            WHEN UPPER(TRIM({conversion_status_column})) = 'PENDING' THEN 4
-            WHEN {conversion_status_column} IS NULL THEN 5
+            WHEN UPPER(TRIM({conversion_status_expr})) = 'URGENT' THEN 1
+            WHEN UPPER(TRIM({conversion_status_expr})) = 'READY' THEN 2
+            WHEN UPPER(TRIM({conversion_status_expr})) IN ({sql_in((LEGACY_FAIL, *CONVERSION_FAIL_STATUSES))}) THEN 3
+            WHEN UPPER(TRIM({conversion_status_expr})) = 'PENDING' THEN 4
+            WHEN {_empty_text_expr(table, conversion_status_column)} THEN 5
             ELSE 9
           END,
         """
@@ -265,15 +324,15 @@ def get_pending_jobs() -> list[SqlInfoJob]:
                {to_sql_select}, {tuned_sql_column}, {tuning_status_select}, BIND_SQL, BIND_SET, TEST_SQL, {conversion_status_select}, LOG,
                UPD_TS, {fr_bindtuned_sql_column}, {user_edited_column}, {removed_correct_placeholders}, {sql_length_column}, {map_type_column}, {formatted_sql_column}, {tuned_result_column}, {priority_column}, {retry_count_column}
         FROM {table}
-        WHERE (UPPER(TRIM({conversion_status_column})) IN ({pending_status_sql}) OR {conversion_status_column} IS NULL)
-          AND ({to_sql_column} IS NULL OR UPPER(TRIM({conversion_status_column})) NOT IN ({conversion_success_sql}))
+        WHERE (UPPER(TRIM({conversion_status_expr})) IN ({pending_status_sql}) OR {_empty_text_expr(table, conversion_status_column)})
+          AND ({_empty_text_expr(table, to_sql_column)} OR UPPER(TRIM({conversion_status_expr})) NOT IN ({conversion_success_sql}))
           {batch_limit_clause}
         ORDER BY
           {priority_order_clause}
           UPD_TS NULLS FIRST,
           {effective_fr_sql_length_expr} ASC,
-          TO_CHAR(SPACE_NM),
-          TO_CHAR(SQL_ID)
+          {space_nm_order_expr},
+          {sql_id_order_expr}
     """
 
     jobs: list[SqlInfoJob] = []
@@ -299,8 +358,8 @@ def get_sql_job_by_row_id(row_id: str) -> SqlInfoJob | None:
     removed_correct_placeholders = "CAST(NULL AS CLOB) AS UNUSED_SQL_PLACEHOLDER_1, CAST(NULL AS CLOB) AS UNUSED_SQL_PLACEHOLDER_2"
     conversion_status_column = _CONVERSION_STATUS_COLUMN
     tuning_status_column = _TUNING_STATUS_COLUMN
-    conversion_status_select = _status_select_expr(conversion_status_column, "STATUS_CONVERSION")
-    tuning_status_select = _status_select_expr(tuning_status_column, "STATUS_TUNING")
+    conversion_status_select = _status_select_expr(conversion_status_column, "STATUS_CONVERSION", table)
+    tuning_status_select = _status_select_expr(tuning_status_column, "STATUS_TUNING", table)
     tuned_sql_column = _optional_alias_expr(available_columns, "TUNED_TO_SQL", "TUNED_SQL", fallback="TUNED_SQL")
     fr_bindtuned_sql_column = _optional_alias_expr(available_columns, "TUNED_FR_SQL", "FR_BINDTUNED_SQL", fallback="FR_BINDTUNED_SQL")
     sql_length_column = "SQL_LENGTH" if "SQL_LENGTH" in available_columns else "CAST(NULL AS VARCHAR2(4000)) AS SQL_LENGTH"
@@ -338,8 +397,12 @@ def get_tuning_jobs() -> list:
     to_sql_select = f"{to_sql_column} AS TO_SQL_TEXT"
     conversion_status_column = _CONVERSION_STATUS_COLUMN
     tuning_status_column = _TUNING_STATUS_COLUMN
-    conversion_status_select = _status_select_expr(conversion_status_column, "STATUS_CONVERSION")
-    tuning_status_select = _status_select_expr(tuning_status_column, "STATUS_TUNING")
+    conversion_status_expr = _text_compare_expr(table, conversion_status_column)
+    tuning_status_expr = _text_compare_expr(table, tuning_status_column)
+    space_nm_order_expr = _text_compare_expr(table, "SPACE_NM")
+    sql_id_order_expr = _text_compare_expr(table, "SQL_ID")
+    conversion_status_select = _status_select_expr(conversion_status_column, "STATUS_CONVERSION", table)
+    tuning_status_select = _status_select_expr(tuning_status_column, "STATUS_TUNING", table)
 
     user_edited_column = "USER_EDITED" if "USER_EDITED" in available_columns else "CAST(NULL AS VARCHAR2(1)) AS USER_EDITED"
     removed_correct_placeholders = "CAST(NULL AS CLOB) AS UNUSED_SQL_PLACEHOLDER_1, CAST(NULL AS CLOB) AS UNUSED_SQL_PLACEHOLDER_2"
@@ -359,20 +422,20 @@ def get_tuning_jobs() -> list:
                {to_sql_select}, {tuned_sql_column}, {tuning_status_select}, BIND_SQL, BIND_SET, TEST_SQL, {conversion_status_select}, LOG,
                UPD_TS, {fr_bindtuned_sql_column}, {user_edited_column}, {removed_correct_placeholders}, {sql_length_column}, {map_type_column}, {formatted_sql_column}, {tuned_result_column}, {priority_column}, {retry_count_column}
         FROM {table}
-        WHERE UPPER(TRIM({tuning_status_column})) IN ({sql_in(('URGENT', 'READY', LEGACY_FAIL, *TUNING_FAIL_STATUSES))})
-          AND {to_sql_column} IS NOT NULL
-          AND UPPER(TRIM({conversion_status_column})) IN ({sql_in(CONVERSION_SUCCESS_STATUSES)})
+        WHERE UPPER(TRIM({tuning_status_expr})) IN ({sql_in(('URGENT', 'READY', LEGACY_FAIL, *TUNING_FAIL_STATUSES))})
+          AND NOT ({_empty_text_expr(table, to_sql_column)})
+          AND UPPER(TRIM({conversion_status_expr})) IN ({sql_in(CONVERSION_SUCCESS_STATUSES)})
           {batch_limit_clause}
         ORDER BY
           CASE
-            WHEN UPPER(TRIM({tuning_status_column})) = 'URGENT' THEN 1
-            WHEN UPPER(TRIM({tuning_status_column})) = 'READY' THEN 2
-            WHEN UPPER(TRIM({tuning_status_column})) IN ({sql_in((LEGACY_FAIL, *TUNING_FAIL_STATUSES))}) THEN 3
+            WHEN UPPER(TRIM({tuning_status_expr})) = 'URGENT' THEN 1
+            WHEN UPPER(TRIM({tuning_status_expr})) = 'READY' THEN 2
+            WHEN UPPER(TRIM({tuning_status_expr})) IN ({sql_in((LEGACY_FAIL, *TUNING_FAIL_STATUSES))}) THEN 3
             ELSE 9
           END,
           UPD_TS NULLS FIRST,
-          TO_CHAR(SPACE_NM),
-          TO_CHAR(SQL_ID)
+          {space_nm_order_expr},
+          {sql_id_order_expr}
     """
 
     jobs = []
@@ -402,8 +465,12 @@ def get_formatting_jobs() -> list[SqlInfoJob]:
     ):
         return []
     conversion_status_column = _CONVERSION_STATUS_COLUMN
-    conversion_status_select = _status_select_expr(conversion_status_column, "STATUS_CONVERSION")
-    tuning_status_select = _status_select_expr(tuning_status_column, "STATUS_TUNING")
+    tuning_status_expr = _text_compare_expr(table, tuning_status_column)
+    formatting_retry_expr = _text_compare_expr(table, "FORMATTING_RETRY_YN")
+    space_nm_order_expr = _text_compare_expr(table, "SPACE_NM")
+    sql_id_order_expr = _text_compare_expr(table, "SQL_ID")
+    conversion_status_select = _status_select_expr(conversion_status_column, "STATUS_CONVERSION", table)
+    tuning_status_select = _status_select_expr(tuning_status_column, "STATUS_TUNING", table)
 
     user_edited_column = "USER_EDITED" if "USER_EDITED" in available_columns else "CAST(NULL AS VARCHAR2(1)) AS USER_EDITED"
     removed_correct_placeholders = "CAST(NULL AS CLOB) AS UNUSED_SQL_PLACEHOLDER_1, CAST(NULL AS CLOB) AS UNUSED_SQL_PLACEHOLDER_2"
@@ -422,13 +489,13 @@ def get_formatting_jobs() -> list[SqlInfoJob]:
                {to_sql_select}, {tuned_sql_column}, {tuning_status_select}, BIND_SQL, BIND_SET, TEST_SQL, {conversion_status_select}, LOG,
                UPD_TS, {fr_bindtuned_sql_column}, {user_edited_column}, {removed_correct_placeholders}, {sql_length_column}, {map_type_column}, FORMATTED_SQL, {tuned_result_column}, {priority_column}, {retry_count_column}
         FROM {table}
-        WHERE UPPER(TRIM({tuning_status_column})) IN ({sql_in(TUNING_SUCCESS_STATUSES)})
-          AND UPPER(TRIM(FORMATTING_RETRY_YN)) = 'Y'
+        WHERE UPPER(TRIM({tuning_status_expr})) IN ({sql_in(TUNING_SUCCESS_STATUSES)})
+          AND UPPER(TRIM({formatting_retry_expr})) = 'Y'
           {batch_limit_clause}
         ORDER BY
           UPD_TS NULLS FIRST,
-          TO_CHAR(SPACE_NM),
-          TO_CHAR(SQL_ID)
+          {space_nm_order_expr},
+          {sql_id_order_expr}
     """
 
     jobs: list[SqlInfoJob] = []
